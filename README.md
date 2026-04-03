@@ -2,6 +2,11 @@
 
 An AI-driven multi-agent trading system that integrates technical analysis, sentiment analysis, and risk management for automated trading decisions.
 
+## Branch Guide
+
+- `main`: team scaffold / TODO skeleton version
+- `full-version`: integrated implementation draft
+
 ## Project Structure
 
 ```
