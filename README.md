@@ -7,6 +7,13 @@ An AI-driven multi-agent trading system that integrates technical analysis, sent
 - `main`: team scaffold / TODO skeleton version
 - `full-version`: integrated implementation draft
 
+## Current Focus
+
+- Person A integrates the overall pipeline and owns the technical-analysis path
+- `src/data_tools.py` now uses real market data from `yfinance`
+- The technical layer keeps SMA / EMA / RSI / MACD / Bollinger Bands
+- A lightweight quantitative boost is added so technical decisions are not based on LLM output alone
+
 ## Project Structure
 
 ```
@@ -57,6 +64,8 @@ agentic-trading-system/
    ```bash
    python src/agentic_trading.py
    ```
+
+   If `ANTHROPIC_API_KEY` is missing, the orchestrator falls back to a rule-based mode for technical and sentiment analysis.
 
 4. **View dashboard**
    ```bash

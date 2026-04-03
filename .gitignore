@@ -24,3 +24,7 @@ build/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Local reference / scratch folders
+try-project/
+week6/
