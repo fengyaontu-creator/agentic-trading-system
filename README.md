@@ -7,8 +7,12 @@ An AI-driven multi-agent trading system that integrates technical analysis, sent
 ```
 agentic-trading-system/
 ├── src/
-│   ├── dashboard.py              # Visualization dashboard
-│   └── agentic_trading.py        # Main trading pipeline
+│   ├── agentic_trading.py        # Main orchestrator
+│   ├── data_tools.py             # Market data & technical indicators
+│   ├── sentiment_tools.py        # Multi-source sentiment analysis
+│   ├── broker_alpaca.py          # Alpaca order execution
+│   ├── backtester.py             # Backtesting & risk management
+│   └── dashboard.py              # Visualization dashboard
 ├── outputs/                      # Generated at runtime (git-ignored)
 │   ├── market_data.csv           # Raw market data
 │   ├── technical_signals.csv     # Technical indicator signals
@@ -82,9 +86,11 @@ See [docs/data_dictionary.md](docs/data_dictionary.md) for full schema.
 
 ## Team
 
-| Member | Module |
-|--------|--------|
-| TBD | Technical Analysis |
-| TBD | Sentiment Analysis |
-| TBD | Risk Management |
-| TBD | Execution & Dashboard |
+| Member | Module | File |
+|--------|--------|------|
+| Person A | Market Data & Technical Indicators | `data_tools.py` |
+| Person B | Multi-source Sentiment Analysis | `sentiment_tools.py` |
+| Person C | Alpaca Order Execution | `broker_alpaca.py` |
+| Person D | Backtesting & Risk Management | `backtester.py` |
+| Person E | Visualization Dashboard | `dashboard.py` |
+| All | Main Orchestrator | `agentic_trading.py` |
