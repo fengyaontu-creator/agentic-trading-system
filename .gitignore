@@ -1,0 +1,26 @@
+# Environment
+.env
+venv/
+.venv/
+
+# Outputs (generated at runtime, keep folder via .gitkeep)
+outputs/*
+!outputs/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/

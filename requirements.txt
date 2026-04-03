@@ -1,0 +1,27 @@
+# Core
+python-dotenv>=1.0.0
+numpy>=1.24.0
+pandas>=2.0.0
+pydantic>=2.0.0
+
+# LLM / LangChain
+langchain-core>=0.2.0
+langchain-anthropic>=0.1.0
+
+# Market Data
+yfinance>=0.2.30
+
+# Broker (Person C: uncomment when ready)
+# alpaca-py>=0.21.0
+
+# Sentiment (Person B: uncomment when ready)
+# newsapi-python>=0.2.7
+# beautifulsoup4>=4.12.0
+# requests>=2.31.0
+
+# Visualization (Person E)
+matplotlib>=3.7.0
+# plotly>=5.15.0  # optional, for interactive charts
+
+# Testing
+# pytest>=7.4.0
