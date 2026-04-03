@@ -11,7 +11,9 @@ Owner: Person B
 """
 
 import os
+import re
 import json
+import requests
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List
@@ -37,34 +39,35 @@ def fetch_news_headlines(symbol: str, days: int = 7) -> List[str]:
     Returns:
         List of headline strings
     """
-    # TODO: Implement NewsAPI integration
-    # -------------------------------------------------------
-    # from newsapi import NewsApiClient
-    #
-    # api_key = os.getenv("NEWS_API_KEY")
-    # if not api_key:
-    #     print("WARNING: NEWS_API_KEY not set, returning empty headlines")
-    #     return []
-    #
-    # newsapi = NewsApiClient(api_key=api_key)
-    # from_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-    #
-    # # Search for company name or ticker
-    # response = newsapi.get_everything(
-    #     q=symbol,
-    #     from_param=from_date,
-    #     language='en',
-    #     sort_by='publishedAt',
-    #     page_size=20
-    # )
-    #
-    # headlines = [article['title'] for article in response.get('articles', [])]
-    # return headlines
-    # -------------------------------------------------------
+    api_key = os.getenv("NEWS_API_KEY")
+    if not api_key:
+        print(f"WARNING: NEWS_API_KEY not set, returning empty headlines for {symbol}")
+        return []
 
-    # Placeholder: return empty list until implemented
-    print(f"[TODO] fetch_news_headlines not yet implemented for {symbol}")
-    return []
+    from_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": symbol,
+        "from": from_date,
+        "language": "en",
+        "sortBy": "publishedAt",
+        "pageSize": 20,
+        "apiKey": api_key,
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        headlines = [
+            article["title"]
+            for article in data.get("articles", [])
+            if article.get("title")
+        ]
+        return headlines
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR: NewsAPI request failed for {symbol}: {e}")
+        return []
 
 
 def fetch_finviz_sentiment(symbol: str) -> Dict:
@@ -78,35 +81,50 @@ def fetch_finviz_sentiment(symbol: str) -> Dict:
     Returns:
         Dict with 'headlines' (list of str) and 'analyst_rating' (str)
     """
-    # TODO: Implement FinViz scraping
-    # -------------------------------------------------------
-    # import requests
-    # from bs4 import BeautifulSoup
-    #
-    # url = f"https://finviz.com/quote.ashx?t={symbol}"
-    # headers = {'User-Agent': 'Mozilla/5.0'}
-    # response = requests.get(url, headers=headers)
-    # soup = BeautifulSoup(response.text, 'html.parser')
-    #
-    # # Extract news headlines from the news table
-    # news_table = soup.find(id='news-table')
-    # headlines = []
-    # if news_table:
-    #     rows = news_table.find_all('tr')
-    #     for row in rows[:10]:  # Last 10 headlines
-    #         title = row.a.text if row.a else ""
-    #         if title:
-    #             headlines.append(title)
-    #
-    # # Extract analyst recommendation if available
-    # analyst_rating = "N/A"
-    # # ... parse from page ...
-    #
-    # return {"headlines": headlines, "analyst_rating": analyst_rating}
-    # -------------------------------------------------------
+    from bs4 import BeautifulSoup
 
-    print(f"[TODO] fetch_finviz_sentiment not yet implemented for {symbol}")
-    return {"headlines": [], "analyst_rating": "N/A"}
+    url = f"https://finviz.com/quote.ashx?t={symbol}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Referer": "https://finviz.com/",
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR: FinViz request failed for {symbol}: {e}")
+        return {"headlines": [], "analyst_rating": "N/A"}
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    # --- News headlines ---
+    headlines = []
+    news_table = soup.find(id="news-table")
+    if news_table:
+        for row in news_table.find_all("tr")[:10]:
+            a_tag = row.find("a")
+            if a_tag and a_tag.text.strip():
+                headlines.append(a_tag.text.strip())
+
+    # --- Analyst recommendation ---
+    # FinViz displays it in a snapshot table as "Recom" with a numeric value,
+    # and/or as a text label in the ratings table rows.
+    analyst_rating = "N/A"
+    for td in soup.find_all("td"):
+        if td.text.strip() == "Recom":
+            sibling = td.find_next_sibling("td")
+            if sibling:
+                analyst_rating = sibling.text.strip()
+            break
+
+    return {"headlines": headlines, "analyst_rating": analyst_rating}
 
 
 # ============================================================================
@@ -132,45 +150,65 @@ def analyze_headlines_with_llm(headlines: List[str], llm) -> Dict:
             "breakdown": []
         }
 
-    # TODO: Implement LLM sentiment analysis
-    # -------------------------------------------------------
-    # from langchain_core.prompts import ChatPromptTemplate
-    #
-    # prompt = ChatPromptTemplate.from_messages([
-    #     ("system", """You are a financial sentiment analyst.
-    # Analyze each headline and rate its sentiment from -1.0 (very bearish)
-    # to +1.0 (very bullish). Consider the financial market impact.
-    #
-    # Respond with ONLY a JSON object:
-    # {{
-    #     "scores": [
-    #         {{"headline": "...", "score": 0.0, "reason": "..."}},
-    #         ...
-    #     ],
-    #     "average_score": 0.0,
-    #     "overall_label": "bullish" | "bearish" | "neutral"
-    # }}"""),
-    #     ("human", "Analyze these headlines:\n{headlines}")
-    # ])
-    #
-    # chain = prompt | llm
-    # headlines_text = "\n".join(f"- {h}" for h in headlines)
-    # response = chain.invoke({"headlines": headlines_text})
-    #
-    # # Parse JSON response
-    # content = response.content
-    # if "```json" in content:
-    #     content = content.split("```json")[1].split("```")[0]
-    # result = json.loads(content.strip())
-    # return result
-    # -------------------------------------------------------
+    from langchain_core.prompts import ChatPromptTemplate
 
-    print("[TODO] analyze_headlines_with_llm not yet implemented")
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", (
+            "You are a financial sentiment analyst. "
+            "Analyze each headline and rate its market sentiment from -1.0 (very bearish) "
+            "to +1.0 (very bullish). Focus on the likely impact on the stock price.\n\n"
+            "Rules for the JSON output:\n"
+            "- Respond with ONLY a valid JSON object — no markdown, no extra text\n"
+            "- The 'reason' field must be plain ASCII, no quotes, no newlines, max 15 words\n"
+            "- Do NOT escape apostrophes or use smart quotes inside string values\n\n"
+            "Format:\n"
+            "{{\n"
+            '    "scores": [\n'
+            '        {{"headline": "...", "score": 0.0, "reason": "one sentence"}},\n'
+            "        ...\n"
+            "    ],\n"
+            '    "average_score": 0.0,\n'
+            '    "overall_label": "bullish" | "bearish" | "neutral"\n'
+            "}}"
+        )),
+        ("human", "Analyze these headlines:\n{headlines}"),
+    ])
+
+    headlines_text = "\n".join(f"- {h}" for h in headlines)
+    chain = prompt | llm
+
+    try:
+        response = chain.invoke({"headlines": headlines_text})
+        content = response.content
+
+        # Extract the outermost {...} block — handles fences, leading/trailing text,
+        # and stray characters that break a simple strip approach.
+        match = re.search(r"\{.*\}", content, flags=re.DOTALL)
+        if not match:
+            raise json.JSONDecodeError("No JSON object found in LLM response", content, 0)
+        parsed = json.loads(match.group())
+    except json.JSONDecodeError as e:
+        print(f"ERROR: Failed to parse LLM JSON response: {e}")
+        return {
+            "average_score": 0.0,
+            "label": "neutral",
+            "num_articles": len(headlines),
+            "breakdown": []
+        }
+    except Exception as e:
+        print(f"ERROR: LLM call failed: {e}")
+        return {
+            "average_score": 0.0,
+            "label": "neutral",
+            "num_articles": len(headlines),
+            "breakdown": []
+        }
+
     return {
-        "average_score": 0.0,
-        "label": "neutral",
+        "average_score": float(parsed.get("average_score", 0.0)),
+        "label": parsed.get("overall_label", "neutral"),
         "num_articles": len(headlines),
-        "breakdown": []
+        "breakdown": parsed.get("scores", []),
     }
 
 
@@ -182,7 +220,9 @@ def fuse_sentiment_scores(
     news_score: float,
     finviz_score: float = 0.0,
     news_weight: float = 0.6,
-    finviz_weight: float = 0.4
+    finviz_weight: float = 0.4,
+    news_available: bool = True,
+    finviz_available: bool = True,
 ) -> Dict:
     """
     Fuse sentiment scores from multiple sources into a single score.
@@ -192,19 +232,30 @@ def fuse_sentiment_scores(
     Args:
         news_score: Sentiment from NewsAPI headlines (-1 to +1)
         finviz_score: Sentiment from FinViz (-1 to +1)
-        news_weight: Weight for news source (default 0.6)
-        finviz_weight: Weight for FinViz source (default 0.4)
+        news_weight: Preferred weight for news source (default 0.6)
+        finviz_weight: Preferred weight for FinViz source (default 0.4)
+        news_available: Whether the news source produced real data
+        finviz_available: Whether the FinViz source produced real data
 
     Returns:
         Dict with fused score, confidence, and label
     """
-    # Weighted average
-    total_weight = news_weight + finviz_weight
-    fused = (news_score * news_weight + finviz_score * finviz_weight) / total_weight
+    # Redirect full weight to whichever source(s) actually have data
+    effective_news_w = news_weight if news_available else 0.0
+    effective_finviz_w = finviz_weight if finviz_available else 0.0
+    total_weight = effective_news_w + effective_finviz_w
 
-    # Confidence is higher when sources agree
-    agreement = 1.0 - abs(news_score - finviz_score) / 2.0
-    confidence = agreement * 0.8 + 0.2  # minimum 0.2 confidence
+    if total_weight == 0.0:
+        fused = 0.0
+        confidence = 0.2
+    else:
+        fused = (news_score * effective_news_w + finviz_score * effective_finviz_w) / total_weight
+        # Confidence: lower when only one source, lower when sources disagree
+        if news_available and finviz_available:
+            agreement = 1.0 - abs(news_score - finviz_score) / 2.0
+            confidence = agreement * 0.8 + 0.2
+        else:
+            confidence = 0.5  # single-source: moderate confidence
 
     # Label
     if fused > 0.5:
@@ -248,31 +299,85 @@ def get_market_sentiment(symbol: str) -> str:
     Returns:
         JSON string with fused sentiment score and analysis
     """
-    # --- Source 1: NewsAPI ---
+    # --- Build LLM instance once (shared across sources) ---
+    llm = None
+    try:
+        from langchain_openai import ChatOpenAI
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY not set")
+        llm = ChatOpenAI(
+            model="anthropic/claude-3-haiku",
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+            temperature=0,
+        )
+    except Exception as e:
+        print(f"WARNING: LLM unavailable, sentiment scoring disabled: {e}")
+
+    # --- Source 1: NewsAPI + LLM scoring ---
     news_headlines = fetch_news_headlines(symbol)
-    # TODO: once LLM integration is done, replace 0.0 with actual score
-    # news_analysis = analyze_headlines_with_llm(news_headlines, llm)
-    # news_score = news_analysis.get("average_score", 0.0)
-    news_score = 0.0
+    if llm and news_headlines:
+        news_analysis = analyze_headlines_with_llm(news_headlines, llm)
+    else:
+        news_analysis = {"average_score": 0.0, "label": "neutral", "breakdown": []}
+    news_score = news_analysis.get("average_score", 0.0)
+    news_available = bool(news_headlines)
 
     # --- Source 2: FinViz ---
     finviz_data = fetch_finviz_sentiment(symbol)
-    # TODO: score the FinViz headlines similarly
-    finviz_score = 0.0
+    finviz_headlines = finviz_data.get("headlines", [])
+    if llm and finviz_headlines:
+        finviz_analysis = analyze_headlines_with_llm(finviz_headlines, llm)
+    else:
+        finviz_analysis = {"average_score": 0.0}
+    finviz_score = finviz_analysis.get("average_score", 0.0)
+    finviz_available = bool(finviz_headlines)
 
     # --- Fuse ---
-    fused = fuse_sentiment_scores(news_score, finviz_score)
+    fused = fuse_sentiment_scores(
+        news_score, finviz_score,
+        news_available=news_available,
+        finviz_available=finviz_available,
+    )
+
+    # --- Build description ---
+    total_articles = len(news_headlines) + len(finviz_headlines)
+    analyst_rating = finviz_data.get("analyst_rating", "N/A")
+    source_parts = []
+    if news_headlines:
+        source_parts.append(f"{len(news_headlines)} NewsAPI article(s)")
+    if finviz_headlines:
+        source_parts.append(f"{len(finviz_headlines)} FinViz headline(s)")
+    if not source_parts:
+        source_parts.append("no articles retrieved")
+    description = (
+        f"{fused['label'].replace('_', ' ').title()} outlook for {symbol} "
+        f"based on {', '.join(source_parts)}."
+        + (f" Analyst rating: {analyst_rating}." if analyst_rating != "N/A" else "")
+    )
 
     # --- Build result ---
     result = {
-        'symbol': symbol,
-        'sentiment': fused['label'],
-        'sentiment_score': fused['fused_score'],
-        'confidence': fused['confidence'],
-        'description': f"Sentiment analysis based on {len(news_headlines)} news articles",
-        'news_volume': 'high' if len(news_headlines) > 10 else 'medium' if len(news_headlines) > 3 else 'low',
-        'num_articles': len(news_headlines),
-        'sources': fused['sources'],
+        "symbol": symbol,
+        "sentiment": fused["label"],
+        "sentiment_score": fused["fused_score"],
+        "confidence": fused["confidence"],
+        "description": description,
+        "analyst_rating": analyst_rating,
+        "num_articles": total_articles,
+        "news_volume": "high" if total_articles > 10 else "medium" if total_articles > 3 else "low",
+        "sources": {
+            "news": {
+                "score": fused["sources"]["news"],
+                "num_headlines": len(news_headlines),
+            },
+            "finviz": {
+                "score": fused["sources"]["finviz"],
+                "num_headlines": len(finviz_headlines),
+                "analyst_rating": analyst_rating,
+            },
+        },
     }
 
     return json.dumps(result, indent=2)
@@ -283,6 +388,16 @@ def get_market_sentiment(symbol: str) -> str:
 # ============================================================================
 
 if __name__ == "__main__":
-    print("Testing get_market_sentiment for AAPL...")
-    result = get_market_sentiment.invoke({"symbol": "AAPL"})
-    print(result)
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    test_symbols = ["AAPL", "TSLA"]
+    for sym in test_symbols:
+        print(f"\n{'='*50}")
+        print(f"Testing get_market_sentiment for {sym}...")
+        print('='*50)
+        raw = get_market_sentiment.invoke({"symbol": sym})
+        parsed = json.loads(raw)
+        print(json.dumps(parsed, indent=2))
+        print(f"  => {parsed['sentiment']}  score={parsed['sentiment_score']}  confidence={parsed['confidence']}")
+        print(f"     {parsed['description']}")
