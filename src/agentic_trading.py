@@ -318,6 +318,8 @@ class ExecutionAgent:
         strategy: str = "MARKET",
         stop_loss: float = None,
         take_profit: float = None,
+        api_key: str = None,
+        secret_key: str = None,
     ) -> Optional[Dict]:
         if quantity <= 0:
             return None
@@ -330,6 +332,8 @@ class ExecutionAgent:
             strategy=strategy,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            api_key=api_key,
+            secret_key=secret_key,
         )
         if result and result.get("main"):
             order = result["main"]
@@ -342,7 +346,8 @@ class ExecutionAgent:
 class TradingOrchestrator:
     """Coordinate technical, sentiment, risk, and execution modules."""
 
-    def __init__(self, api_key: Optional[str], initial_capital: float = 100000):
+    def __init__(self, api_key: Optional[str], user_id: str = "default", initial_capital: float = 100000):
+        self.user_id = user_id
         self.llm = None
         if api_key:
             self.llm = ChatOpenAI(
@@ -356,11 +361,31 @@ class TradingOrchestrator:
         self.sentiment_agent = SentimentAnalysisAgent(self.llm)
         self.risk_agent = RiskManagementAgent(self.llm)
         self.execution_agent = ExecutionAgent(self.llm)
+
+        # Load state from DB, or init fresh
+        db.init_db()
+        db.create_user(user_id, user_id)
+
+        # Load user's Alpaca credentials from DB
+        creds = db.get_alpaca_credentials(user_id)
+        self.alpaca_key = creds["api_key"] if creds else None
+        self.alpaca_secret = creds["api_secret"] if creds else None
+        saved = db.load_portfolio(user_id)
+        saved_positions = {
+            p["symbol"]: Position(
+                symbol=p["symbol"],
+                quantity=p["quantity"],
+                entry_price=p["entry_price"],
+                current_price=p["current_price"],
+                entry_time=p["entry_time"],
+            )
+            for p in db.load_positions(user_id)
+        }
         self.portfolio_state = PortfolioState(
-            cash=initial_capital,
-            positions={},
-            portfolio_value=initial_capital,
-            total_trades=0,
+            cash=saved["cash"] if saved else initial_capital,
+            positions=saved_positions,
+            portfolio_value=saved["portfolio_value"] if saved else initial_capital,
+            total_trades=saved["total_trades"] if saved else 0,
         )
         self.backtester = Backtester(initial_capital=initial_capital)
 
@@ -370,6 +395,16 @@ class TradingOrchestrator:
             for position in self.portfolio_state.positions.values()
         )
         self.portfolio_state.portfolio_value = self.portfolio_state.cash + positions_value
+        # Persist to DB
+        db.save_portfolio(
+            self.user_id,
+            self.portfolio_state.cash,
+            self.portfolio_state.portfolio_value,
+            self.portfolio_state.total_trades,
+        )
+        for symbol, pos in self.portfolio_state.positions.items():
+            db.save_position(self.user_id, symbol, pos.quantity, pos.entry_price, pos.current_price, pos.entry_time)
+
 
     def process_symbol(self, symbol: str) -> Dict:
         print(f"\n{'=' * 70}")
@@ -414,6 +449,8 @@ class TradingOrchestrator:
                 strategy=execution_decision.get("execution_strategy", "MARKET"),
                 stop_loss=risk_assessment.get("stop_loss"),
                 take_profit=risk_assessment.get("take_profit"),
+                api_key=self.alpaca_key,
+                secret_key=self.alpaca_secret,
             )
 
             if order:
@@ -462,6 +499,14 @@ class TradingOrchestrator:
                     quantity,
                     filled_price,
                 )
+                db.record_trade(
+                    self.user_id,
+                    symbol,
+                    signal_type,
+                    quantity,
+                    filled_price,
+                    order_id=order.get("order_id"),
+                )
 
         self.update_portfolio_value()
 
@@ -476,9 +521,16 @@ class TradingOrchestrator:
             "portfolio_value": self.portfolio_state.portfolio_value,
         }
 
-    def run_trading_cycle(self, symbols: List[str]) -> List[Dict]:
+    def run_trading_cycle(self, symbols: List[str] = None) -> List[Dict]:
+        # If no symbols passed, load from DB; fall back to default list
+        if not symbols:
+            symbols = db.get_user_symbols(self.user_id)
+        if not symbols:
+            symbols = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "AMZN", "XOM", "KO"]
+
         print(f"\n{'#' * 70}")
         print(f"Starting Trading Cycle - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"User: {self.user_id} | Symbols: {symbols}")
         print(f"Portfolio Value: ${self.portfolio_state.portfolio_value:,.2f}")
         print(f"Cash: ${self.portfolio_state.cash:,.2f}")
         print(f"{'#' * 70}")
@@ -516,8 +568,14 @@ if __name__ == "__main__":
     symbols = load_symbols()
     print(f"Trading symbols: {symbols}")
 
-    orchestrator = TradingOrchestrator(api_key=api_key, initial_capital=100000)
-    results = orchestrator.run_trading_cycle(symbols)
+    user_id = os.getenv("TRADING_USER_ID", "default")
+    orchestrator = TradingOrchestrator(api_key=api_key, user_id=user_id, initial_capital=100000)
+
+    # If symbols passed via CLI or .env, save them to DB for this user
+    if symbols:
+        db.set_user_symbols(user_id, symbols)
+
+    results = orchestrator.run_trading_cycle()
 
     print("\n" + "=" * 70)
     print("DETAILED TRADING SUMMARY")

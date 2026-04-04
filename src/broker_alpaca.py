@@ -21,24 +21,22 @@ def require_env(name: str) -> str:
     return value
 
 
-def get_trading_client():
+def get_trading_client(api_key: str = None, secret_key: str = None):
     """
     Initialize an Alpaca TradingClient for paper trading.
 
-    Required environment variables:
-    - ALPACA_API_KEY
-    - ALPACA_API_SECRET
+    Accepts explicit credentials or falls back to environment variables.
     """
     from alpaca.trading.client import TradingClient
 
-    api_key = require_env("ALPACA_API_KEY")
-    secret_key = require_env("ALPACA_API_SECRET")
+    api_key = api_key or require_env("ALPACA_API_KEY")
+    secret_key = secret_key or require_env("ALPACA_API_SECRET")
     return TradingClient(api_key, secret_key, paper=True)
 
 
-def get_account_info() -> Dict:
+def get_account_info(api_key: str = None, secret_key: str = None) -> Dict:
     """Return live paper-account information from Alpaca."""
-    client = get_trading_client()
+    client = get_trading_client(api_key, secret_key)
     account = client.get_account()
     return {
         "id": str(account.id),
@@ -54,9 +52,9 @@ def get_account_info() -> Dict:
     }
 
 
-def get_positions() -> list:
+def get_positions(api_key: str = None, secret_key: str = None) -> list:
     """Return all open positions from the paper account."""
-    client = get_trading_client()
+    client = get_trading_client(api_key, secret_key)
     positions = client.get_all_positions()
     return [
         {
@@ -91,12 +89,12 @@ def normalize_order(order) -> Dict:
     }
 
 
-def submit_market_order(symbol: str, qty: int, side: str) -> Dict:
+def submit_market_order(symbol: str, qty: int, side: str, api_key: str = None, secret_key: str = None) -> Dict:
     """Submit a real paper market order."""
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import MarketOrderRequest
 
-    client = get_trading_client()
+    client = get_trading_client(api_key, secret_key)
     order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
     order_request = MarketOrderRequest(
         symbol=symbol,
@@ -108,12 +106,12 @@ def submit_market_order(symbol: str, qty: int, side: str) -> Dict:
     return normalize_order(order)
 
 
-def submit_limit_order(symbol: str, qty: int, side: str, limit_price: float) -> Dict:
+def submit_limit_order(symbol: str, qty: int, side: str, limit_price: float, api_key: str = None, secret_key: str = None) -> Dict:
     """Submit a real paper limit order."""
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import LimitOrderRequest
 
-    client = get_trading_client()
+    client = get_trading_client(api_key, secret_key)
     order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
     order_request = LimitOrderRequest(
         symbol=symbol,
@@ -126,12 +124,12 @@ def submit_limit_order(symbol: str, qty: int, side: str, limit_price: float) -> 
     return normalize_order(order)
 
 
-def submit_stop_order(symbol: str, qty: int, side: str, stop_price: float) -> Dict:
+def submit_stop_order(symbol: str, qty: int, side: str, stop_price: float, api_key: str = None, secret_key: str = None) -> Dict:
     """Submit a real paper stop order."""
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import StopOrderRequest
 
-    client = get_trading_client()
+    client = get_trading_client(api_key, secret_key)
     order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
     order_request = StopOrderRequest(
         symbol=symbol,
@@ -177,28 +175,28 @@ def execute_trade(
     strategy: str = "MARKET",
     stop_loss: Optional[float] = None,
     take_profit: Optional[float] = None,
+    api_key: str = None,
+    secret_key: str = None,
 ) -> Optional[Dict]:
     """
     Unified execution entrypoint for the orchestrator.
-
-    `price`, `stop_loss`, and `take_profit` are kept in the signature for
-    compatibility with the rest of the project.
+    Accepts optional user credentials; falls back to .env if not provided.
     """
     if quantity <= 0:
         return None
 
     orders = {}
     if strategy == "LIMIT":
-        orders["main"] = submit_limit_order(symbol, quantity, signal_type, price)
+        orders["main"] = submit_limit_order(symbol, quantity, signal_type, price, api_key, secret_key)
     elif strategy == "STOP":
-        orders["main"] = submit_stop_order(symbol, quantity, signal_type, price)
+        orders["main"] = submit_stop_order(symbol, quantity, signal_type, price, api_key, secret_key)
     else:
-        orders["main"] = submit_market_order(symbol, quantity, signal_type)
+        orders["main"] = submit_market_order(symbol, quantity, signal_type, api_key, secret_key)
 
     if stop_loss and signal_type.upper() == "BUY":
-        orders["stop_loss"] = submit_stop_order(symbol, quantity, "SELL", stop_loss)
+        orders["stop_loss"] = submit_stop_order(symbol, quantity, "SELL", stop_loss, api_key, secret_key)
     if take_profit and signal_type.upper() == "BUY":
-        orders["take_profit"] = submit_limit_order(symbol, quantity, "SELL", take_profit)
+        orders["take_profit"] = submit_limit_order(symbol, quantity, "SELL", take_profit, api_key, secret_key)
 
     return orders
 
