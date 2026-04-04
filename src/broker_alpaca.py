@@ -196,9 +196,9 @@ def execute_trade(
         orders["main"] = submit_market_order(symbol, quantity, signal_type)
 
     if stop_loss and signal_type.upper() == "BUY":
-        orders["stop_loss_note"] = f"Stop-loss requested at {stop_loss:.2f} but not yet auto-submitted"
+        orders["stop_loss"] = submit_stop_order(symbol, quantity, "SELL", stop_loss)
     if take_profit and signal_type.upper() == "BUY":
-        orders["take_profit_note"] = f"Take-profit requested at {take_profit:.2f} but not yet auto-submitted"
+        orders["take_profit"] = submit_limit_order(symbol, quantity, "SELL", take_profit)
 
     return orders
 

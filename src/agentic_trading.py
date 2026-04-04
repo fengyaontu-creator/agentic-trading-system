@@ -23,6 +23,7 @@ from backtester import Backtester
 from broker_alpaca import execute_trade as alpaca_execute_trade
 from data_tools import fetch_market_data
 from sentiment_tools import get_market_sentiment
+import database as db
 
 
 class SignalType(str, Enum):
@@ -205,12 +206,22 @@ Market Data:
             return self._fallback_analysis(market_data)
 
         ml_signal = market_data.get("ml_signal", {})
-        if ml_signal.get("confidence_boost", 0) and ml_signal.get("signal") == analysis.get("signal", "HOLD"):
+        quant_signal = ml_signal.get("signal", "HOLD")
+        llm_signal = analysis.get("signal", "HOLD")
+
+        # If quant and LLM contradict each other, fall back to HOLD
+        opposite = {("BUY", "SELL"), ("SELL", "BUY")}
+        if (quant_signal, llm_signal) in opposite:
+            analysis["signal"] = "HOLD"
+            analysis["confidence"] = 0.0
+            analysis["reasoning"] = f"Quant ({quant_signal}) and LLM ({llm_signal}) disagree — defaulting to HOLD"
+        elif ml_signal.get("confidence_boost", 0) and quant_signal == llm_signal:
             original_conf = float(analysis.get("confidence", 0.5))
             boosted_conf = min(1.0, original_conf + float(ml_signal["confidence_boost"]))
             analysis["confidence"] = round(boosted_conf, 2)
             reasons = ", ".join(ml_signal.get("reasons", []))
             analysis["reasoning"] = f"{analysis.get('reasoning', '')} [Quant boost: {reasons}]".strip()
+
         analysis["ml_signal"] = ml_signal
         return analysis
 
@@ -227,6 +238,7 @@ class RiskManagementAgent:
         portfolio_state: PortfolioState,
         current_price: float,
         volatility: float,
+        symbol: str = "",
     ) -> Dict:
         if signal.get("signal") == "HOLD":
             return {
@@ -240,14 +252,32 @@ class RiskManagementAgent:
 
         max_position_value = portfolio_state.portfolio_value * 0.10
         risk_adjustment = max(0.25, 1 - (volatility * 10))
-        target_value = max_position_value * signal.get("confidence", 0.0) * risk_adjustment
-        position_size = int(min(target_value, portfolio_state.cash) / current_price)
+        existing = portfolio_state.positions.get(symbol)
+        action = signal.get("signal", "HOLD")
+
+        if action == "SELL":
+            if existing and existing.quantity > 0:
+                # Close existing long — sell all shares held
+                position_size = existing.quantity
+                reasoning = f"Closing long position of {existing.quantity} shares"
+            else:
+                # No long position — open short, same sizing as a new long
+                short_value = max_position_value * signal.get("confidence", 0.0) * risk_adjustment
+                position_size = int(min(short_value, portfolio_state.cash) / current_price)
+                reasoning = f"Opening short, 10% max with volatility adjustment ({volatility:.4f})"
+        else:  # BUY
+            existing_value = (existing.quantity * current_price) if existing else 0.0
+            headroom = max(0.0, max_position_value - existing_value)
+            target_value = headroom * signal.get("confidence", 0.0) * risk_adjustment
+            position_size = int(min(target_value, portfolio_state.cash) / current_price)
+            reasoning = f"10% max allocation with volatility adjustment ({volatility:.4f}), existing={existing_value:.0f}"
+
         risk_label = "LOW" if volatility < 0.015 else "MEDIUM" if volatility < 0.03 else "HIGH"
 
         return {
             "position_size": max(0, position_size),
             "risk_assessment": risk_label,
-            "reasoning": f"10% max allocation with volatility adjustment ({volatility:.4f})",
+            "reasoning": reasoning,
             "stop_loss": round(current_price * 0.97, 2),
             "take_profit": round(current_price * 1.05, 2),
             "should_trade": position_size > 0 and risk_label != "HIGH",
@@ -316,9 +346,9 @@ class TradingOrchestrator:
         self.llm = None
         if api_key:
             self.llm = ChatOpenAI(
-                model="anthropic/claude-sonnet-4-5",
-                openai_api_key=api_key,
-                openai_api_base="https://openrouter.ai/api/v1",
+                model="anthropic/claude-sonnet-4-6",
+                api_key=api_key,
+                base_url="https://openrouter.ai/api/v1",
                 temperature=0.3,
             )
 
@@ -362,6 +392,7 @@ class TradingOrchestrator:
             self.portfolio_state,
             current_price,
             volatility,
+            symbol=symbol,
         )
         print(f"[Risk] should_trade={risk_assessment.get('should_trade')} size={risk_assessment.get('position_size')}")
 
@@ -391,16 +422,37 @@ class TradingOrchestrator:
 
                 if signal_type == "BUY":
                     self.portfolio_state.cash -= quantity * filled_price
-                    self.portfolio_state.positions[symbol] = Position(
-                        symbol=symbol,
-                        quantity=quantity,
-                        entry_price=filled_price,
-                        current_price=filled_price,
-                        entry_time=datetime.now().isoformat(),
-                    )
-                elif signal_type == "SELL" and symbol in self.portfolio_state.positions:
+                    existing = self.portfolio_state.positions.get(symbol)
+                    if existing and existing.quantity < 0:
+                        # Covering a short position
+                        new_qty = existing.quantity + quantity
+                        if new_qty >= 0:
+                            del self.portfolio_state.positions[symbol]
+                        else:
+                            existing.quantity = new_qty
+                    else:
+                        self.portfolio_state.positions[symbol] = Position(
+                            symbol=symbol,
+                            quantity=quantity,
+                            entry_price=filled_price,
+                            current_price=filled_price,
+                            entry_time=datetime.now().isoformat(),
+                        )
+                elif signal_type == "SELL":
                     self.portfolio_state.cash += quantity * filled_price
-                    del self.portfolio_state.positions[symbol]
+                    existing = self.portfolio_state.positions.get(symbol)
+                    if existing and existing.quantity > 0:
+                        # Closing a long position
+                        del self.portfolio_state.positions[symbol]
+                    else:
+                        # Opening a short position (negative quantity)
+                        self.portfolio_state.positions[symbol] = Position(
+                            symbol=symbol,
+                            quantity=-quantity,
+                            entry_price=filled_price,
+                            current_price=filled_price,
+                            entry_time=datetime.now().isoformat(),
+                        )
 
                 self.portfolio_state.total_trades += 1
                 self.backtester.record_trade(
@@ -445,12 +497,27 @@ class TradingOrchestrator:
         return results
 
 
+def load_symbols() -> List[str]:
+    """Load trading symbols from CLI args, or fall back to TRADING_SYMBOLS in .env."""
+    import sys
+    if len(sys.argv) > 1:
+        symbols = [s.strip().upper() for s in " ".join(sys.argv[1:]).replace(",", " ").split() if s.strip()]
+        if symbols:
+            return symbols
+    env_symbols = os.getenv("TRADING_SYMBOLS", "")
+    if env_symbols:
+        return [s.strip().upper() for s in env_symbols.split(",") if s.strip()]
+    return ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "AMZN", "XOM", "KO"]
+
+
 if __name__ == "__main__":
     load_dotenv()
     api_key = os.getenv("OPENROUTER_API_KEY")
+    symbols = load_symbols()
+    print(f"Trading symbols: {symbols}")
 
     orchestrator = TradingOrchestrator(api_key=api_key, initial_capital=100000)
-    results = orchestrator.run_trading_cycle(["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "AMZN", "XOM", "KO"])
+    results = orchestrator.run_trading_cycle(symbols)
 
     print("\n" + "=" * 70)
     print("DETAILED TRADING SUMMARY")

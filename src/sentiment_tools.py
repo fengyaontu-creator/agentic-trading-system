@@ -219,45 +219,56 @@ def analyze_headlines_with_llm(headlines: List[str], llm) -> Dict:
 def fuse_sentiment_scores(
     news_score: float,
     finviz_score: float = 0.0,
-    news_weight: float = 0.6,
-    finviz_weight: float = 0.4,
+    av_score: float = 0.0,
+    news_weight: float = 0.4,
+    finviz_weight: float = 0.3,
+    av_weight: float = 0.3,
     news_available: bool = True,
     finviz_available: bool = True,
+    av_available: bool = False,
 ) -> Dict:
     """
-    Fuse sentiment scores from multiple sources into a single score.
-
-    When only one source is available, that source gets full weight.
+    Fuse sentiment scores from three sources into a single score.
+    When a source is unavailable its weight is redistributed to the others.
 
     Args:
-        news_score: Sentiment from NewsAPI headlines (-1 to +1)
-        finviz_score: Sentiment from FinViz (-1 to +1)
-        news_weight: Preferred weight for news source (default 0.6)
-        finviz_weight: Preferred weight for FinViz source (default 0.4)
-        news_available: Whether the news source produced real data
-        finviz_available: Whether the FinViz source produced real data
-
-    Returns:
-        Dict with fused score, confidence, and label
+        news_score:     Sentiment from NewsAPI headlines (-1 to +1)
+        finviz_score:   Sentiment from FinViz (-1 to +1)
+        av_score:       Sentiment from Alpha Vantage (-1 to +1)
+        news_available:   Whether NewsAPI produced real data
+        finviz_available: Whether FinViz produced real data
+        av_available:     Whether Alpha Vantage produced real data
     """
-    # Redirect full weight to whichever source(s) actually have data
-    effective_news_w = news_weight if news_available else 0.0
+    effective_news_w   = news_weight   if news_available   else 0.0
     effective_finviz_w = finviz_weight if finviz_available else 0.0
-    total_weight = effective_news_w + effective_finviz_w
+    effective_av_w     = av_weight     if av_available     else 0.0
+    total_weight = effective_news_w + effective_finviz_w + effective_av_w
 
     if total_weight == 0.0:
         fused = 0.0
         confidence = 0.2
     else:
-        fused = (news_score * effective_news_w + finviz_score * effective_finviz_w) / total_weight
-        # Confidence: lower when only one source, lower when sources disagree
-        if news_available and finviz_available:
-            agreement = 1.0 - abs(news_score - finviz_score) / 2.0
+        fused = (
+            news_score   * effective_news_w +
+            finviz_score * effective_finviz_w +
+            av_score     * effective_av_w
+        ) / total_weight
+
+        active_scores = [
+            s for s, avail in [
+                (news_score, news_available),
+                (finviz_score, finviz_available),
+                (av_score, av_available),
+            ] if avail
+        ]
+        num_sources = len(active_scores)
+        if num_sources >= 2:
+            spread = max(active_scores) - min(active_scores)
+            agreement = 1.0 - spread / 2.0
             confidence = agreement * 0.8 + 0.2
         else:
             confidence = 0.5  # single-source: moderate confidence
 
-    # Label
     if fused > 0.5:
         label = "very_bullish"
     elif fused > 0.2:
@@ -274,10 +285,63 @@ def fuse_sentiment_scores(
         "confidence": round(confidence, 4),
         "label": label,
         "sources": {
-            "news": round(news_score, 4),
-            "finviz": round(finviz_score, 4)
+            "news":   round(news_score, 4),
+            "finviz": round(finviz_score, 4),
+            "alpha_vantage": round(av_score, 4),
         }
     }
+
+
+# ============================================================================
+# Alpha Vantage 情绪数据
+# ============================================================================
+
+def fetch_alpha_vantage_sentiment(symbol: str) -> Dict:
+    """
+    Fetch news sentiment score from Alpha Vantage News Sentiment API.
+    Returns a score in [-1, 1] and the number of articles used.
+
+    Requires ALPHA_VANTAGE_API_KEY in .env
+    """
+    api_key = os.getenv("ALPHA_VANTAGE_API_KEY")
+    if not api_key:
+        print(f"WARNING: ALPHA_VANTAGE_API_KEY not set, skipping for {symbol}")
+        return {"score": 0.0, "num_articles": 0, "available": False}
+
+    url = "https://www.alphavantage.co/query"
+    params = {
+        "function": "NEWS_SENTIMENT",
+        "tickers": symbol,
+        "apikey": api_key,
+        "limit": 20,
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        feed = data.get("feed", [])
+        if not feed:
+            return {"score": 0.0, "num_articles": 0, "available": False}
+
+        # Each article has ticker_sentiment list — find the score for our symbol
+        scores = []
+        for article in feed:
+            for ticker_data in article.get("ticker_sentiment", []):
+                if ticker_data.get("ticker") == symbol:
+                    score = float(ticker_data.get("ticker_sentiment_score", 0.0))
+                    scores.append(score)
+
+        if not scores:
+            return {"score": 0.0, "num_articles": 0, "available": False}
+
+        avg_score = float(np.mean(scores))
+        return {"score": round(avg_score, 4), "num_articles": len(scores), "available": True}
+
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR: Alpha Vantage request failed for {symbol}: {e}")
+        return {"score": 0.0, "num_articles": 0, "available": False}
 
 
 # ============================================================================
@@ -307,7 +371,7 @@ def get_market_sentiment(symbol: str) -> str:
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY not set")
         llm = ChatOpenAI(
-            model="anthropic/claude-3-haiku",
+            model="anthropic/claude-haiku-4-5",
             base_url="https://openrouter.ai/api/v1",
             api_key=api_key,
             temperature=0,
@@ -334,21 +398,29 @@ def get_market_sentiment(symbol: str) -> str:
     finviz_score = finviz_analysis.get("average_score", 0.0)
     finviz_available = bool(finviz_headlines)
 
+    # --- Source 3: Alpha Vantage ---
+    av_data = fetch_alpha_vantage_sentiment(symbol)
+    av_score = av_data["score"]
+    av_available = av_data["available"]
+
     # --- Fuse ---
     fused = fuse_sentiment_scores(
-        news_score, finviz_score,
+        news_score, finviz_score, av_score,
         news_available=news_available,
         finviz_available=finviz_available,
+        av_available=av_available,
     )
 
     # --- Build description ---
-    total_articles = len(news_headlines) + len(finviz_headlines)
+    total_articles = len(news_headlines) + len(finviz_headlines) + av_data["num_articles"]
     analyst_rating = finviz_data.get("analyst_rating", "N/A")
     source_parts = []
     if news_headlines:
         source_parts.append(f"{len(news_headlines)} NewsAPI article(s)")
     if finviz_headlines:
         source_parts.append(f"{len(finviz_headlines)} FinViz headline(s)")
+    if av_available:
+        source_parts.append(f"{av_data['num_articles']} Alpha Vantage article(s)")
     if not source_parts:
         source_parts.append("no articles retrieved")
     description = (
@@ -376,6 +448,10 @@ def get_market_sentiment(symbol: str) -> str:
                 "score": fused["sources"]["finviz"],
                 "num_headlines": len(finviz_headlines),
                 "analyst_rating": analyst_rating,
+            },
+            "alpha_vantage": {
+                "score": fused["sources"]["alpha_vantage"],
+                "num_articles": av_data["num_articles"],
             },
         },
     }
