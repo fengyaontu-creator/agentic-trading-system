@@ -11,6 +11,7 @@ Tables:
 
 import sqlite3
 import os
+import hashlib
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -54,6 +55,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 user_id          TEXT PRIMARY KEY,
                 username         TEXT UNIQUE NOT NULL,
+                password_hash    TEXT,
                 alpaca_key_enc   TEXT,
                 alpaca_secret_enc TEXT,
                 created_at       TEXT NOT NULL
@@ -121,11 +123,15 @@ def init_db():
 
 # ── Users ──────────────────────────────────────────────────────────────────
 
-def create_user(user_id: str, username: str) -> Dict:
+def _hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def create_user(user_id: str, username: str, password: str = "") -> Dict:
     with get_conn() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO users (user_id, username, created_at) VALUES (?, ?, ?)",
-            (user_id, username, datetime.utcnow().isoformat()),
+            "INSERT OR IGNORE INTO users (user_id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, username, _hash_password(password), datetime.utcnow().isoformat()),
         )
         # Init portfolio with $100k if not exists
         conn.execute(
@@ -141,6 +147,24 @@ def get_user(user_id: str) -> Optional[Dict]:
     with get_conn() as conn:
         row = conn.execute(
             "SELECT user_id, username, created_at FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_username(username: str) -> Optional[Dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id, username, created_at FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def verify_user(username: str, password: str) -> Optional[Dict]:
+    """Return user dict if credentials match, else None."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id, username, created_at FROM users WHERE username = ? AND password_hash = ?",
+            (username, _hash_password(password)),
         ).fetchone()
         return dict(row) if row else None
 
