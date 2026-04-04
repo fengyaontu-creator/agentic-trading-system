@@ -100,6 +100,22 @@ def init_db():
                 order_id   TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
+
+            CREATE TABLE IF NOT EXISTS signals (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id          TEXT NOT NULL,
+                symbol           TEXT NOT NULL,
+                date             TEXT NOT NULL,
+                signal           TEXT NOT NULL,
+                confidence       REAL NOT NULL,
+                reasoning        TEXT,
+                technical_score  REAL,
+                sentiment_score  REAL,
+                executed         INTEGER NOT NULL DEFAULT 0,
+                created_at       TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                UNIQUE(user_id, symbol, date)
+            );
         """)
 
 
@@ -253,6 +269,72 @@ def get_trade_history(user_id: str, limit: int = 100) -> List[Dict]:
         rows = conn.execute(
             "SELECT * FROM trades WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
             (user_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ── Signals ──────────────────────────────────────────────────────────────────
+
+def save_signal(
+    user_id: str,
+    symbol: str,
+    date: str,
+    signal: str,
+    confidence: float,
+    reasoning: str = None,
+    technical_score: float = None,
+    sentiment_score: float = None,
+):
+    """Save or update today's analysis signal for a user/symbol."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO signals
+               (user_id, symbol, date, signal, confidence, reasoning, technical_score, sentiment_score, executed, created_at)
+               VALUES (?,?,?,?,?,?,?,?,0,?)
+               ON CONFLICT(user_id, symbol, date) DO UPDATE SET
+                   signal = excluded.signal,
+                   confidence = excluded.confidence,
+                   reasoning = excluded.reasoning,
+                   technical_score = excluded.technical_score,
+                   sentiment_score = excluded.sentiment_score,
+                   created_at = excluded.created_at""",
+            (user_id, symbol, date, signal, confidence, reasoning, technical_score, sentiment_score, datetime.utcnow().isoformat()),
+        )
+
+
+def mark_signal_executed(user_id: str, symbol: str, date: str):
+    """Mark a signal as executed after the trade is placed."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE signals SET executed = 1 WHERE user_id = ? AND symbol = ? AND date = ?",
+            (user_id, symbol, date),
+        )
+
+
+def get_signals(user_id: str, date: str = None, limit: int = 50) -> List[Dict]:
+    """Get signals for a user. If date given, filter to that day only."""
+    with get_conn() as conn:
+        if date:
+            rows = conn.execute(
+                "SELECT * FROM signals WHERE user_id = ? AND date = ? ORDER BY created_at DESC",
+                (user_id, date),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM signals WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_pending_signals(user_id: str, date: str) -> List[Dict]:
+    """Get unexecuted BUY/SELL signals for today."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM signals
+               WHERE user_id = ? AND date = ? AND executed = 0 AND signal != 'HOLD'
+               ORDER BY confidence DESC""",
+            (user_id, date),
         ).fetchall()
         return [dict(r) for r in rows]
 
