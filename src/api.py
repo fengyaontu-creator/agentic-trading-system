@@ -11,6 +11,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -195,7 +196,20 @@ def reconcile(user=Depends(_current_user)):
 
 _dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 if os.path.exists(_dist):
-    app.mount("/", StaticFiles(directory=_dist, html=True), name="static")
+    _assets = os.path.join(_dist, "assets")
+    if os.path.exists(_assets):
+        app.mount("/assets", StaticFiles(directory=_assets), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    def serve_frontend_index():
+        return FileResponse(os.path.join(_dist, "index.html"))
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend_app(full_path: str):
+        # React Router handles client-side routes such as /dashboard and /settings.
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return FileResponse(os.path.join(_dist, "index.html"))
 
 
 if __name__ == "__main__":
