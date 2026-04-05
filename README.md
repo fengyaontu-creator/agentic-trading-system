@@ -2,6 +2,8 @@
 
 Multi-user AI trading prototype with a React frontend, FastAPI backend, SQLite persistence, and scheduled paper-trading flows built around technical analysis, sentiment analysis, risk management, and Alpaca execution.
 
+For the latest branch status, deployment notes, and teammate handoff summary, see [UPDATE_SUMMARY.md](./UPDATE_SUMMARY.md).
+
 ## What It Does
 
 - Supports multi-user registration and login
@@ -265,4 +267,3 @@ It is best suited for:
 - coursework
 - prototyping
 - monitored paper-trading runs
-
