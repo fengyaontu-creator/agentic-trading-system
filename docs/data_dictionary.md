@@ -1,99 +1,120 @@
 # Data Dictionary
 
-## Naming Conventions
-
-- All column names use **snake_case**
-- All timestamps use **ISO 8601** format (`YYYY-MM-DDTHH:MM:SS`)
-- All scores are normalized to **[-1, 1]** or **[0, 1]** (specify per file)
+All data is stored in **SQLite** (`trading.db`). Timestamps use ISO 8601 format.
 
 ---
 
-## Standard Columns
+## Tables
 
+### users
 | Column | Type | Description |
 |--------|------|-------------|
-| `datetime` | str (ISO 8601) | Timestamp of the data point |
-| `symbol` | str | Ticker symbol (e.g., AAPL) |
-| `technical_score` | float [-1, 1] | Composite technical indicator score |
-| `sentiment_score` | float [-1, 1] | Sentiment analysis score |
-| `risk_score` | float [0, 1] | Risk assessment score (0 = low risk) |
-| `final_decision` | str | Trading decision: BUY / SELL / HOLD |
+| `user_id` | TEXT PK | Unique user identifier |
+| `username` | TEXT UNIQUE | Display name / login |
+| `password_hash` | TEXT | PBKDF2-HMAC-SHA256 salted hash |
+| `alpaca_key_enc` | TEXT | Fernet-encrypted Alpaca API key |
+| `alpaca_secret_enc` | TEXT | Fernet-encrypted Alpaca secret |
+| `created_at` | TEXT | Registration timestamp |
+
+### user_symbols
+| Column | Type | Description |
+|--------|------|-------------|
+| `user_id` | TEXT FK | Owner |
+| `symbol` | TEXT | Ticker (e.g. AAPL) |
+| `added_at` | TEXT | When added to watchlist |
+
+### portfolio_state
+| Column | Type | Description |
+|--------|------|-------------|
+| `user_id` | TEXT PK | Owner |
+| `cash` | REAL | Available cash |
+| `portfolio_value` | REAL | Cash + positions market value |
+| `total_trades` | INTEGER | Lifetime trade count |
+| `updated_at` | TEXT | Last update timestamp |
+
+### positions
+| Column | Type | Description |
+|--------|------|-------------|
+| `user_id` | TEXT FK | Owner |
+| `symbol` | TEXT | Ticker |
+| `quantity` | INTEGER | Signed qty (negative = short) |
+| `entry_price` | REAL | Weighted average entry price |
+| `current_price` | REAL | Last mark-to-market price |
+| `entry_time` | TEXT | Position open timestamp |
+
+### trades
+| Column | Type | Description |
+|--------|------|-------------|
+| `user_id` | TEXT FK | Owner |
+| `symbol` | TEXT | Ticker |
+| `side` | TEXT | BUY or SELL |
+| `quantity` | INTEGER | Shares traded |
+| `price` | REAL | Fill price |
+| `timestamp` | TEXT | Execution timestamp |
+| `order_id` | TEXT | Broker order ID |
+
+### signals
+| Column | Type | Description |
+|--------|------|-------------|
+| `user_id` | TEXT FK | Owner |
+| `symbol` | TEXT | Ticker |
+| `date` | TEXT | Analysis date (YYYY-MM-DD) |
+| `signal` | TEXT | BUY / SELL / HOLD |
+| `confidence` | REAL [0,1] | Signal confidence |
+| `reasoning` | TEXT | LLM reasoning summary |
+| `technical_score` | REAL [0,1] | Technical indicator score |
+| `sentiment_score` | REAL [-1,1] | Sentiment analysis score |
+| `executed` | INTEGER | 0 = pending, 1 = traded |
+| `created_at` | TEXT | Signal generation timestamp |
+
+### user_settings
+| Column | Type | Description |
+|--------|------|-------------|
+| `user_id` | TEXT PK | Owner |
+| `risk_per_trade` | REAL | Max portfolio % risk per trade (default 0.02) |
+| `max_concentration` | REAL | Max % of portfolio in one stock (default 0.10) |
+| `stop_loss_multiplier` | REAL | Volatility multiplier for stop-loss (default 2.0) |
+| `take_profit_pct` | REAL | Take-profit target % (default 0.05) |
+| `min_confidence` | REAL | Minimum confidence to trade (default 0.3) |
+| `updated_at` | TEXT | Last update timestamp |
 
 ---
 
-## File Schemas
+## API Response Shapes
 
-### market_data.csv
-| Column | Type | Description |
-|--------|------|-------------|
-| `datetime` | str | Trading date |
-| `symbol` | str | Ticker |
-| `open` | float | Opening price |
-| `high` | float | High price |
-| `low` | float | Low price |
-| `close` | float | Closing price |
-| `volume` | int | Trading volume |
+### GET /api/dashboard
+```json
+{
+  "portfolio": { "cash": 0.0, "portfolio_value": 0.0, "total_trades": 0 },
+  "positions": [{ "symbol": "", "quantity": 0, "entry_price": 0.0, "current_price": 0.0 }],
+  "recent_trades": [{ "symbol": "", "side": "", "quantity": 0, "price": 0.0, "timestamp": "" }]
+}
+```
 
-### technical_signals.csv
-| Column | Type | Description |
-|--------|------|-------------|
-| `datetime` | str | Signal timestamp |
-| `symbol` | str | Ticker |
-| `rsi` | float | RSI value (0-100) |
-| `macd` | float | MACD line value |
-| `macd_signal` | float | MACD signal line |
-| `technical_score` | float | Composite score [-1, 1] |
+### GET /api/signals
+```json
+{
+  "today": [{ "symbol": "", "signal": "", "confidence": 0.0, "executed": false, "date": "" }],
+  "history": []
+}
+```
 
-### sentiment_signals.csv
-| Column | Type | Description |
-|--------|------|-------------|
-| `datetime` | str | Analysis timestamp |
-| `symbol` | str | Ticker |
-| `source` | str | Data source (news / social) |
-| `raw_score` | float | Raw sentiment value |
-| `sentiment_score` | float | Normalized score [-1, 1] |
+### GET /api/settings
+```json
+{
+  "symbols": ["AAPL"],
+  "has_alpaca": true,
+  "trading_params": {
+    "risk_per_trade": 0.02,
+    "max_concentration": 0.10,
+    "stop_loss_multiplier": 2.0,
+    "take_profit_pct": 0.05,
+    "min_confidence": 0.3
+  }
+}
+```
 
-### execution_log.csv
-| Column | Type | Description |
-|--------|------|-------------|
-| `datetime` | str | Execution timestamp |
-| `symbol` | str | Ticker |
-| `action` | str | BUY / SELL |
-| `quantity` | int | Number of shares |
-| `price` | float | Execution price |
-| `commission` | float | Transaction cost |
-
-### portfolio_history.csv
-| Column | Type | Description |
-|--------|------|-------------|
-| `datetime` | str | Snapshot timestamp |
-| `total_value` | float | Portfolio NAV |
-| `cash` | float | Cash balance |
-| `positions` | str (JSON) | Current holdings |
-| `daily_return` | float | Daily return % |
-
-### risk_log.csv
-| Column | Type | Description |
-|--------|------|-------------|
-| `datetime` | str | Assessment timestamp |
-| `symbol` | str | Ticker |
-| `risk_score` | float | Risk score [0, 1] |
-| `risk_type` | str | Type of risk flagged |
-| `action_taken` | str | Mitigation action |
-
-### decision_log.csv
-| Column | Type | Description |
-|--------|------|-------------|
-| `datetime` | str | Decision timestamp |
-| `symbol` | str | Ticker |
-| `technical_score` | float | Tech score at decision time |
-| `sentiment_score` | float | Sentiment score at decision time |
-| `risk_score` | float | Risk score at decision time |
-| `final_decision` | str | BUY / SELL / HOLD |
-| `confidence` | float | Decision confidence [0, 1] |
-| `reasoning` | str | Agent reasoning summary |
-
-### backtest_metrics.json
+### backtest_metrics.json (file output)
 ```json
 {
   "total_return": 0.0,

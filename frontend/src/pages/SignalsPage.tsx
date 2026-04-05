@@ -65,7 +65,7 @@ export default function SignalsPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <p className="text-gray-500">Loading…</p>;
+  if (loading) return <p className="text-gray-500">Loading...</p>;
   if (error) return <p className="text-red-400">{error}</p>;
 
   const { today, history } = data!;
@@ -77,7 +77,7 @@ export default function SignalsPage() {
       {/* Today */}
       <section>
         <h2 className="mb-3 text-sm font-semibold text-gray-400">
-          Today — {new Date().toLocaleDateString("en-US", { dateStyle: "full" })}
+          Today - {new Date().toLocaleDateString("en-US", { dateStyle: "full" })}
         </h2>
         {today.length === 0 ? (
           <div className="rounded-xl border border-gray-800 bg-gray-900 px-5 py-8 text-center text-sm text-gray-500">

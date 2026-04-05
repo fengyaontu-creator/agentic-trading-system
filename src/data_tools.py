@@ -1,10 +1,9 @@
 """
-Market data helpers for Person A's scope.
+data_tools.py -- Market data helpers.
 
-This module is responsible for:
-1. Pulling real OHLCV data from yfinance
-2. Computing standard technical indicators
-3. Producing a rule-based quantitative signal that can boost confidence
+1. Pull real OHLCV data from yfinance
+2. Compute standard technical indicators
+3. Produce a rule-based quantitative signal that can boost confidence
 """
 
 import json

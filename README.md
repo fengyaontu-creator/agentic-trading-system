@@ -1,257 +1,268 @@
 # Agentic Trading System
 
-An AI-driven multi-user trading system with a web frontend, FastAPI backend, SQLite persistence, and an agent-based trading pipeline for technical analysis, sentiment analysis, risk management, and execution.
+Multi-user AI trading prototype with a React frontend, FastAPI backend, SQLite persistence, and scheduled paper-trading flows built around technical analysis, sentiment analysis, risk management, and Alpaca execution.
 
-## Branch Guide
+## What It Does
 
-- `main`: team scaffold / TODO skeleton version
-- `full-version`: integrated implementation draft
+- Supports multi-user registration and login
+- Lets each user manage their own watchlist, trading parameters, and Alpaca paper-trading credentials
+- Runs scheduled sessions for:
+  - `analyze`: generate daily signals
+  - `trade`: execute open trades from today's signals
+  - `close`: flatten end-of-day positions for `intraday` users
+- Stores portfolio state, positions, trades, signals, and encrypted user credentials in SQLite
+- Provides a React dashboard for monitoring portfolio, signals, history, and settings
 
-## What This Version Includes
-
-- Multi-user login and registration
-- React frontend for portfolio and signal monitoring
-- FastAPI backend with JWT authentication
-- SQLite persistence for users, watchlists, signals, trades, and portfolio state
-- Encrypted storage of user-specific Alpaca credentials
-- Technical analysis using real market data from `yfinance`
-- Sentiment analysis with external APIs and LLM summarization
-- Trading orchestration and backtesting support
-
-## Architecture Overview
+## Architecture
 
 ```text
 Browser
   ->
-React frontend (`frontend/`)
+React frontend (frontend/)
   ->
-FastAPI backend (`src/api.py`)
+FastAPI API (src/api.py)
   ->
-SQLite database (`trading.db`)
+SQLite (trading.db)
 
-Trading pipeline (`src/agentic_trading.py`)
+Trading flow
   ->
-market data (`src/data_tools.py`)
-  + sentiment (`src/sentiment_tools.py`)
-  + risk / backtesting (`src/backtester.py`)
-  + broker execution (`src/broker_alpaca.py`)
+Scheduler / session services
+  ->
+TradingOrchestrator
+  + technical analysis (src/data_tools.py)
+  + sentiment analysis (src/sentiment_tools.py)
+  + risk and backtesting (src/backtester.py)
+  + execution (src/broker_alpaca.py)
 ```
 
-## Project Structure
+## Current Structure
 
 ```text
-agentic-trading-system/
-├── frontend/                    # React + Vite frontend
-│   ├── src/
-│   │   ├── pages/
-│   │   │   ├── AuthPage.tsx
-│   │   │   ├── DashboardPage.tsx
-│   │   │   ├── SignalsPage.tsx
-│   │   │   ├── HistoryPage.tsx
-│   │   │   └── SettingsPage.tsx
-│   │   ├── components/
-│   │   ├── api.ts
-│   │   └── App.tsx
-│   └── package.json
-├── src/
-│   ├── agentic_trading.py       # Main orchestrator
-│   ├── api.py                   # FastAPI backend
-│   ├── app.py                   # Streamlit UI
-│   ├── backtester.py            # Backtesting & risk management
-│   ├── broker_alpaca.py         # Alpaca order execution
-│   ├── data_tools.py            # Market data & technical indicators
-│   ├── database.py              # SQLite persistence + encrypted credentials
-│   ├── dashboard.py             # Visualization utilities
-│   ├── scheduler.py             # Scheduled analysis / trading runs
-│   └── sentiment_tools.py       # Sentiment analysis
-├── docs/
-├── outputs/                     # Generated runtime outputs (git-ignored)
-├── .env.example
-├── requirements.txt
-└── README.md
+frontend/                  React + Vite frontend
+src/
+  api.py                   FastAPI backend and auth
+  scheduler.py             Cron / scheduled entrypoint
+  services/
+    trading_sessions.py    Analyze / trade / close session logic
+  agentic_trading.py       Main orchestrator
+  position.py              Shared position / fill arithmetic
+  broker_alpaca.py         Alpaca paper-trading adapter
+  database.py              SQLite persistence + encrypted user creds
+  data_tools.py            Market data and indicators
+  sentiment_tools.py       News + sentiment analysis
+  backtester.py            Metrics and portfolio history
+tests/                     Regression tests for core logic
+docs/                      Setup notes and data dictionary
 ```
 
-## Frontend Pages
+## Public vs User Secrets
 
-- `Dashboard`: portfolio summary, positions, allocation, recent trade activity
-- `Signals`: today's BUY / SELL / HOLD signals plus historical signal records
-- `History`: trade history and execution statistics
-- `Settings`: user watchlist and Alpaca credential management
+This project intentionally separates platform-level secrets from per-user trading credentials.
 
-## Core Backend Modules
+### Platform-level secrets in `.env`
 
-- `src/api.py`
-  - FastAPI app
-  - JWT auth
-  - endpoints for auth, dashboard, signals, history, and settings
-  - serves `frontend/dist` in production when available
+These are shared by the deployed system:
 
-- `src/database.py`
-  - stores users, watchlists, positions, trades, portfolio state, and signals
-  - encrypts user-specific Alpaca credentials using `DB_ENCRYPTION_KEY`
+- `JWT_SECRET`
+- `DB_ENCRYPTION_KEY`
+- `OPENROUTER_API_KEY`
+- `NEWS_API_KEY`
+- `ALPHA_VANTAGE_API_KEY`
+- `CORS_ORIGINS`
+- `DB_PATH`
 
-- `src/data_tools.py`
-  - fetches market data from `yfinance`
-  - computes SMA, EMA, MACD, RSI, and Bollinger Bands
-  - generates a lightweight quantitative `ml_signal`
+### Per-user data stored in the database
 
-- `src/agentic_trading.py`
-  - orchestrates technical analysis, sentiment analysis, risk, and execution
-  - loads user-specific Alpaca credentials from the database
-  - updates trades, positions, and portfolio state
+These belong to each user account:
 
-- `src/backtester.py`
-  - records trades and portfolio value
-  - computes Sharpe ratio, Sortino ratio, max drawdown, win rate, and profit factor
+- Alpaca `API Key`
+- Alpaca `API Secret`
+- watchlist symbols
+- trading parameters
+- strategy mode (`intraday` or `swing`)
+
+User Alpaca credentials are encrypted with Fernet before being written to the database.
 
 ## Environment Variables
 
-Create a local `.env` file from `.env.example`.
+Create a `.env` file in the project root.
 
-Common variables used by this project:
+Minimum example:
 
 ```env
-OPENROUTER_API_KEY=...
-NEWS_API_KEY=...
-ALPHA_VANTAGE_API_KEY=...
-DB_ENCRYPTION_KEY=...
-JWT_SECRET=...
+JWT_SECRET=replace-with-a-long-random-string
+DB_ENCRYPTION_KEY=replace-with-a-fernet-key
+OPENROUTER_API_KEY=replace-with-your-openrouter-key
+NEWS_API_KEY=replace-with-your-newsapi-key
+ALPHA_VANTAGE_API_KEY=replace-with-your-alpha-vantage-key
 
-# Optional fallback account for manual / default Alpaca usage
-ALPACA_API_KEY=...
-ALPACA_API_SECRET=...
-ALPACA_BASE_URL=https://paper-api.alpaca.markets
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+DB_PATH=trading.db
 
-# Optional defaults for CLI / scheduler flows
+# Optional local CLI defaults
 TRADING_USER_ID=default
 TRADING_SYMBOLS=AAPL,MSFT,NVDA
-DB_PATH=trading.db
+
+# Optional only for local CLI testing in broker_alpaca.py __main__
+ALPACA_API_KEY=
+ALPACA_API_SECRET=
 ```
 
 Notes:
 
-- `JWT_SECRET` is required for secure login tokens in `src/api.py`
-- `DB_ENCRYPTION_KEY` is required to encrypt and decrypt stored Alpaca credentials
-- user-specific Alpaca keys are primarily stored in the database through the Settings page
-- global `ALPACA_API_KEY` / `ALPACA_API_SECRET` act as optional fallbacks
+- `JWT_SECRET` is required for login tokens
+- `DB_ENCRYPTION_KEY` is required to save and read encrypted Alpaca credentials
+- scheduled analysis requires `OPENROUTER_API_KEY`
+- deployed multi-user trading should use user-saved Alpaca credentials from Settings, not shared `.env` credentials
+
+Generate a Fernet key with:
+
+```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Generate a JWT secret with:
+
+```powershell
+python -c "import secrets; print(secrets.token_hex(32))"
+```
 
 ## Local Development
 
 ### 1. Install Python dependencies
 
-```bash
+```powershell
 pip install -r requirements.txt
 ```
 
-### 2. Create `.env`
+### 2. Install frontend dependencies
 
-```bash
-cp .env.example .env
-```
-
-Then fill in the required keys.
-
-### 3. Install frontend dependencies
-
-```bash
+```powershell
 cd frontend
 npm install
+cd ..
 ```
 
-### 4. Run the frontend in dev mode
-
-```bash
-npm run dev
-```
-
-### 5. Run the backend
+### 3. Start the backend
 
 From the project root:
 
-```bash
+```powershell
 uvicorn src.api:app --reload --port 8000
 ```
 
-FastAPI docs will be available at:
+API docs:
 
 ```text
 http://127.0.0.1:8000/api/docs
 ```
 
-### 6. Optional: Run the Streamlit app
+### 4. Start the frontend
 
-```bash
-streamlit run src/app.py
+In a second terminal:
+
+```powershell
+cd frontend
+npm run dev
 ```
 
-### 7. Optional: Run the trading pipeline directly
+Frontend URL:
 
-```bash
-python src/agentic_trading.py
+```text
+http://127.0.0.1:5173
 ```
+
+If you changed `JWT_SECRET`, clear old browser tokens and log in again.
+
+## Scheduled Sessions
+
+The scheduler supports three sessions:
+
+```powershell
+python src/scheduler.py --session analyze
+python src/scheduler.py --session trade
+python src/scheduler.py --session close
+```
+
+Behavior:
+
+- `analyze`: save today's signals for each user's watchlist
+- `trade`: execute today's pending non-`HOLD` signals during market hours
+- `close`: flatten positions only for users whose strategy is `intraday`
+
+The market-hours logic is evaluated in `America/New_York`.
+
+## Trading Modes
+
+Each user can choose a strategy in Settings:
+
+- `intraday`: open positions can be flattened during the close session
+- `swing`: positions can be carried overnight
+
+Trading parameters are user-specific and persisted in the database.
+
+## Testing
+
+Core regression tests live in `tests/`.
+
+Run tests with:
+
+```powershell
+pytest
+```
+
+Current coverage focuses on:
+
+- shared position update rules
+- scheduler behavior
+- portfolio update logic
 
 ## Production Build
 
 Build the frontend:
 
-```bash
+```powershell
 cd frontend
 npm run build
+cd ..
 ```
 
-This generates `frontend/dist/`.
+When `frontend/dist/` exists, FastAPI serves the built frontend automatically.
 
-When `frontend/dist/` exists, `src/api.py` mounts it automatically, so the FastAPI app can serve both:
+Start the app:
 
-- the web UI at `/`
-- the API at `/api/...`
+```powershell
+uvicorn src.api:app --host 0.0.0.0 --port 8000
+```
 
 ## Deployment Notes
 
-Recommended simple deployment for this project:
+This repository is suitable for a demo / prototype deployment.
 
-- build the frontend on the server
-- run FastAPI with `uvicorn`
-- place Nginx in front as a reverse proxy
-- keep secrets in a server-side `.env`
-- initialize a fresh server-side SQLite database for clean deployment
+Recommended deployment shape:
 
-For a clean server deployment:
+1. Push the current code to GitHub
+2. Clone it on the server
+3. Create a fresh server-side `.env`
+4. Build the frontend
+5. Start FastAPI behind a reverse proxy
+6. Configure scheduled `analyze`, `trade`, and `close` jobs
 
-1. clone the repo from GitHub
-2. create a fresh `.env` on the server
-3. run `npm run build` inside `frontend/`
-4. start `uvicorn src.api:app --host 0.0.0.0 --port 8000`
-5. configure Nginx to forward public traffic to port `8000`
+Important reminders:
 
-## Current Strategy Notes
+- use user-specific Alpaca credentials for multi-user trading
+- keep `JWT_SECRET` and `DB_ENCRYPTION_KEY` private and stable
+- SQLite is acceptable for demos, but PostgreSQL would be better for longer-term multi-user use
+- start with Alpaca paper trading, not live capital
 
-- The system uses one shared pipeline for all users
-- Different users mainly differ by:
-  - watchlist symbols
-  - Alpaca credentials
-  - portfolio state
-  - trade history
-- The current `ml_signal` is a rule-based quantitative enhancement, not a separately trained ML model
-- User-specific strategy parameters are not yet fully configurable through the database
+## Status
 
-## Output Files
+This is a working multi-user paper-trading prototype, not a production-grade brokerage platform.
 
-Generated runtime artifacts may include:
+It is best suited for:
 
-- `outputs/execution_log.csv`
-- `outputs/portfolio_history.csv`
-- `outputs/backtest_metrics.json`
+- demos
+- coursework
+- prototyping
+- monitored paper-trading runs
 
-These are git-ignored runtime outputs.
-
-## Team Ownership
-
-| Member | Module | File |
-|--------|--------|------|
-| Person A | Market Data & Technical Indicators | `src/data_tools.py` |
-| Person B | Multi-source Sentiment Analysis | `src/sentiment_tools.py` |
-| Person C | Alpaca Order Execution | `src/broker_alpaca.py` |
-| Person D | Backtesting & Risk Management | `src/backtester.py` |
-| Person E | Visualization Dashboard | `src/dashboard.py` |
-| All | Main Orchestrator | `src/agentic_trading.py` |

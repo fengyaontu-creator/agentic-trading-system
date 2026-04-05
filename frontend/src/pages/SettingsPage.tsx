@@ -1,6 +1,16 @@
 import { CheckCircle, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, SettingsData } from "../api";
+import { api, SettingsData, TradingParams } from "../api";
+
+type NumericParam = Exclude<keyof TradingParams, "strategy">;
+
+const PARAM_LABELS: Record<NumericParam, { label: string; step: string; min: string; max: string }> = {
+  risk_per_trade:       { label: "Risk per Trade (%)",    step: "0.005", min: "0.005", max: "0.2" },
+  max_concentration:    { label: "Max Concentration (%)", step: "0.01",  min: "0.01",  max: "0.5" },
+  stop_loss_multiplier: { label: "Stop-Loss Multiplier",  step: "0.1",   min: "0.5",   max: "5" },
+  take_profit_pct:      { label: "Take-Profit (%)",       step: "0.01",  min: "0.01",  max: "0.5" },
+  min_confidence:       { label: "Min Confidence",        step: "0.05",  min: "0",      max: "1" },
+};
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
@@ -17,11 +27,17 @@ export default function SettingsPage() {
   const [alpacaMsg, setAlpacaMsg] = useState("");
   const [alpacaErr, setAlpacaErr] = useState("");
 
+  // Trading params state
+  const [tradingParams, setTradingParams] = useState<TradingParams | null>(null);
+  const [paramsMsg, setParamsMsg] = useState("");
+  const [paramsErr, setParamsErr] = useState("");
+
   useEffect(() => {
     api.settings()
       .then((s) => {
         setSettings(s);
         setSymbolsStr(s.symbols.join(", "));
+        setTradingParams(s.trading_params);
       })
       .catch((e) => console.error(e))
       .finally(() => setLoading(false));
@@ -53,6 +69,18 @@ export default function SettingsPage() {
     }
   }
 
+  async function saveTradingParams(e: React.FormEvent) {
+    e.preventDefault();
+    setParamsMsg(""); setParamsErr("");
+    if (!tradingParams) return;
+    try {
+      await api.updateTradingParams(tradingParams);
+      setParamsMsg("Trading parameters saved.");
+    } catch (err: unknown) {
+      setParamsErr(err instanceof Error ? err.message : "Failed");
+    }
+  }
+
   async function removeAlpaca() {
     try {
       await api.deleteAlpaca();
@@ -63,7 +91,7 @@ export default function SettingsPage() {
     }
   }
 
-  if (loading) return <p className="text-gray-500">Loading…</p>;
+  if (loading) return <p className="text-gray-500">Loading...</p>;
 
   return (
     <div className="max-w-xl space-y-6">
@@ -96,6 +124,53 @@ export default function SettingsPage() {
         </form>
       </div>
 
+      {/* Trading Parameters */}
+      {tradingParams && (
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+          <h2 className="mb-4 text-sm font-semibold text-gray-300">Trading Parameters</h2>
+          <form onSubmit={saveTradingParams} className="space-y-3">
+            {(Object.keys(PARAM_LABELS) as NumericParam[]).map((key) => {
+              const cfg = PARAM_LABELS[key];
+              return (
+                <div key={key}>
+                  <label className="mb-1.5 block text-xs text-gray-500">{cfg.label}</label>
+                  <input
+                    type="number"
+                    step={cfg.step}
+                    min={cfg.min}
+                    max={cfg.max}
+                    value={tradingParams[key]}
+                    onChange={(e) =>
+                      setTradingParams({ ...tradingParams, [key]: parseFloat(e.target.value) || 0 })
+                    }
+                    className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2.5 text-sm text-gray-100 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
+              );
+            })}
+            <div>
+              <label className="mb-1.5 block text-xs text-gray-500">Strategy</label>
+              <select
+                value={tradingParams.strategy}
+                onChange={(e) => setTradingParams({ ...tradingParams, strategy: e.target.value })}
+                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2.5 text-sm text-gray-100 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+              >
+                <option value="intraday">Intraday (flatten at close)</option>
+                <option value="swing">Swing / Multi-day (hold overnight)</option>
+              </select>
+            </div>
+            {paramsMsg && <p className="text-sm text-green-400">{paramsMsg}</p>}
+            {paramsErr && <p className="text-sm text-red-400">{paramsErr}</p>}
+            <button
+              type="submit"
+              className="w-full rounded-lg bg-indigo-600 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors"
+            >
+              Save Parameters
+            </button>
+          </form>
+        </div>
+      )}
+
       {/* Alpaca */}
       <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
         <h2 className="mb-4 text-sm font-semibold text-gray-300">Alpaca Paper Trading</h2>
@@ -123,7 +198,7 @@ export default function SettingsPage() {
               type="password"
               value={alpacaKey}
               onChange={(e) => setAlpacaKey(e.target.value)}
-              placeholder="PKxxxx…"
+              placeholder="PKxxxx..."
               className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2.5 text-sm text-gray-100 placeholder-gray-600 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
             />
           </div>
@@ -153,7 +228,7 @@ export default function SettingsPage() {
       </div>
 
       <p className="text-xs text-gray-600">
-        Next analysis: 07:30 ET &nbsp;|&nbsp; Next trade: 09:30 ET &amp; 15:30 ET
+        Analyze: 07:30 ET &nbsp;|&nbsp; Trade: 09:30 ET &nbsp;|&nbsp; Close: 15:30 ET
       </p>
     </div>
   );

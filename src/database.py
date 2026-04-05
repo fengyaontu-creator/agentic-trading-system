@@ -1,12 +1,12 @@
 """
-database.py — SQLite persistence layer
+database.py -- SQLite persistence layer.
 
-Tables:
-- users          : registered users (with encrypted Alpaca credentials)
-- user_symbols   : each user's watchlist
-- portfolio_state: cash + portfolio value per user
-- positions      : open positions per user
-- trades         : full trade history per user
+Sections:
+    1. Core         -- encryption, connection, schema
+    2. Users & auth -- registration, login, password hashing
+    3. Settings, credentials & watchlist
+    4. Portfolio & positions
+    5. Trades & signals
 """
 
 import sqlite3
@@ -103,6 +103,18 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
 
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id              TEXT PRIMARY KEY,
+                risk_per_trade       REAL NOT NULL DEFAULT 0.02,
+                max_concentration    REAL NOT NULL DEFAULT 0.10,
+                stop_loss_multiplier REAL NOT NULL DEFAULT 2.0,
+                take_profit_pct      REAL NOT NULL DEFAULT 0.05,
+                min_confidence       REAL NOT NULL DEFAULT 0.3,
+                strategy             TEXT NOT NULL DEFAULT 'intraday',
+                updated_at           TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            );
+
             CREATE TABLE IF NOT EXISTS signals (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id          TEXT NOT NULL,
@@ -121,10 +133,23 @@ def init_db():
         """)
 
 
-# ── Users ──────────────────────────────────────────────────────────────────
+# =============================================================================
+# Users & auth
+# =============================================================================
 
 def _hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+    salt = os.urandom(16)
+    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 100_000)
+    return salt.hex() + "$" + h.hex()
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    if "$" not in stored:
+        # Legacy sha256 migration path
+        return hashlib.sha256(password.encode()).hexdigest() == stored
+    salt_hex, hash_hex = stored.split("$", 1)
+    h = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt_hex), 100_000)
+    return h.hex() == hash_hex
 
 
 def create_user(user_id: str, username: str, password: str = "") -> Dict:
@@ -138,6 +163,14 @@ def create_user(user_id: str, username: str, password: str = "") -> Dict:
             """INSERT OR IGNORE INTO portfolio_state
                (user_id, cash, portfolio_value, total_trades, updated_at)
                VALUES (?, 100000.0, 100000.0, 0, ?)""",
+            (user_id, datetime.utcnow().isoformat()),
+        )
+        # Init default trading params if not exists
+        conn.execute(
+            """INSERT OR IGNORE INTO user_settings
+               (user_id, risk_per_trade, max_concentration, stop_loss_multiplier,
+                take_profit_pct, min_confidence, strategy, updated_at)
+               VALUES (?, 0.02, 0.10, 2.0, 0.05, 0.3, 'intraday', ?)""",
             (user_id, datetime.utcnow().isoformat()),
         )
     return get_user(user_id)
@@ -163,10 +196,12 @@ def verify_user(username: str, password: str) -> Optional[Dict]:
     """Return user dict if credentials match, else None."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT user_id, username, created_at FROM users WHERE username = ? AND password_hash = ?",
-            (username, _hash_password(password)),
+            "SELECT user_id, username, password_hash, created_at FROM users WHERE username = ?",
+            (username,),
         ).fetchone()
-        return dict(row) if row else None
+    if not row or not _verify_password(password, row["password_hash"]):
+        return None
+    return {"user_id": row["user_id"], "username": row["username"], "created_at": row["created_at"]}
 
 
 def list_users() -> List[Dict]:
@@ -176,6 +211,10 @@ def list_users() -> List[Dict]:
         ).fetchall()
         return [dict(r) for r in rows]
 
+
+# =============================================================================
+# Settings, credentials & watchlist
+# =============================================================================
 
 def save_alpaca_credentials(user_id: str, api_key: str, api_secret: str):
     """Encrypt and store the user's Alpaca credentials."""
@@ -202,7 +241,47 @@ def get_alpaca_credentials(user_id: str) -> Optional[Dict]:
     }
 
 
-# ── Symbols ─────────────────────────────────────────────────────────────────
+_SETTINGS_DEFAULTS = {
+    "risk_per_trade": 0.02,
+    "max_concentration": 0.10,
+    "stop_loss_multiplier": 2.0,
+    "take_profit_pct": 0.05,
+    "min_confidence": 0.3,
+    "strategy": "intraday",
+}
+
+_SETTINGS_COLS = list(_SETTINGS_DEFAULTS.keys())
+
+
+def load_user_settings(user_id: str) -> Dict:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM user_settings WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    if not row:
+        return dict(_SETTINGS_DEFAULTS)
+    return {col: row[col] for col in _SETTINGS_COLS}
+
+
+def save_user_settings(user_id: str, **kwargs):
+    values = {col: kwargs.get(col, _SETTINGS_DEFAULTS[col]) for col in _SETTINGS_COLS}
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO user_settings
+               (user_id, risk_per_trade, max_concentration, stop_loss_multiplier,
+                take_profit_pct, min_confidence, strategy, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                   risk_per_trade       = excluded.risk_per_trade,
+                   max_concentration    = excluded.max_concentration,
+                   stop_loss_multiplier = excluded.stop_loss_multiplier,
+                   take_profit_pct      = excluded.take_profit_pct,
+                   min_confidence       = excluded.min_confidence,
+                   strategy             = excluded.strategy,
+                   updated_at           = excluded.updated_at""",
+            (user_id, *[values[c] for c in _SETTINGS_COLS], datetime.utcnow().isoformat()),
+        )
+
 
 def set_user_symbols(user_id: str, symbols: List[str]):
     """Replace a user's entire watchlist."""
@@ -224,7 +303,9 @@ def get_user_symbols(user_id: str) -> List[str]:
         return [r["symbol"] for r in rows]
 
 
-# ── Portfolio state ──────────────────────────────────────────────────────────
+# =============================================================================
+# Portfolio & positions
+# =============================================================================
 
 def save_portfolio(user_id: str, cash: float, portfolio_value: float, total_trades: int):
     with get_conn() as conn:
@@ -247,8 +328,6 @@ def load_portfolio(user_id: str) -> Optional[Dict]:
         ).fetchone()
         return dict(row) if row else None
 
-
-# ── Positions ────────────────────────────────────────────────────────────────
 
 def save_position(user_id: str, symbol: str, quantity: int, entry_price: float, current_price: float, entry_time: str):
     with get_conn() as conn:
@@ -278,7 +357,9 @@ def load_positions(user_id: str) -> List[Dict]:
         return [dict(r) for r in rows]
 
 
-# ── Trades ───────────────────────────────────────────────────────────────────
+# =============================================================================
+# Trades & signals
+# =============================================================================
 
 def record_trade(user_id: str, symbol: str, side: str, quantity: int, price: float, order_id: str = None):
     with get_conn() as conn:
@@ -296,8 +377,6 @@ def get_trade_history(user_id: str, limit: int = 100) -> List[Dict]:
         ).fetchall()
         return [dict(r) for r in rows]
 
-
-# ── Signals ──────────────────────────────────────────────────────────────────
 
 def save_signal(
     user_id: str,

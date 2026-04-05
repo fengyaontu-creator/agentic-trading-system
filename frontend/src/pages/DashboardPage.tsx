@@ -39,7 +39,7 @@ export default function DashboardPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <p className="text-gray-500">Loading…</p>;
+  if (loading) return <p className="text-gray-500">Loading...</p>;
   if (error) return <p className="text-red-400">{error}</p>;
 
   const { portfolio, positions, recent_trades } = data!;
@@ -67,7 +67,7 @@ export default function DashboardPage() {
     { name: "Cash", value: portfolio.cash },
   ];
 
-  // Scatter chart data — convert timestamp to epoch ms for recharts
+  // Scatter chart data - convert timestamp to epoch ms for recharts
   const tradePoints = recent_trades.map((t) => ({
     x: new Date(t.timestamp).getTime(),
     y: t.price,

@@ -1,10 +1,9 @@
 """
-backtester.py — 回测框架 + 增强版风控
-Owner: Person D
+backtester.py -- Backtesting framework + enhanced risk management.
 
-1. 历史回测引擎：用 yfinance 历史数据模拟多天交易
-2. 绩效指标：Sharpe, Sortino, Max Drawdown, Win Rate, Profit Factor
-3. 增强风控：VaR 计算、动态止损、集中度限制
+1. Historical backtest engine using yfinance data
+2. Performance metrics: Sharpe, Sortino, Max Drawdown, Win Rate, Profit Factor
+3. Enhanced risk: VaR, dynamic stop-loss, concentration limits
 """
 
 import json
@@ -13,9 +12,11 @@ import pandas as pd
 from datetime import datetime
 from typing import Dict, List, Tuple
 
+from position import compute_fill
+
 
 # ============================================================================
-# 绩效指标计算
+# Performance metrics
 # ============================================================================
 
 def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate: float = 0.02) -> float:
@@ -155,7 +156,7 @@ def generate_performance_report(
 
 
 # ============================================================================
-# 增强版风控
+# Enhanced risk management
 # ============================================================================
 
 def calculate_var(returns: pd.Series, confidence: float = 0.95) -> float:
@@ -303,7 +304,7 @@ def enhanced_risk_assessment(
 
     return {
         "position_size": suggested_shares if should_trade else 0,
-        "risk_assessment": risk_level,
+        "risk_level": risk_level,
         "should_trade": should_trade,
         "stop_loss": stop_loss,
         "take_profit": round(current_price * 1.05, 2),  # 5% target
@@ -317,7 +318,7 @@ def enhanced_risk_assessment(
 
 
 # ============================================================================
-# 回测引擎
+# Backtest engine
 # ============================================================================
 
 class Backtester:
@@ -334,47 +335,29 @@ class Backtester:
     def __init__(self, initial_capital: float = 100000):
         self.initial_capital = initial_capital
         self.cash = initial_capital
-        self.positions = {}       # {symbol: {"qty": int, "entry_price": float}}
+        self.positions = {}       # {symbol: {"quantity": int, "entry_price": float}}
         self.trades = []          # list of trade records
         self.portfolio_history = []  # list of (date, value)
 
-    def record_trade(self, date: str, symbol: str, side: str, qty: int,
+    def record_trade(self, date: str, symbol: str, side: str, quantity: int,
                      price: float) -> Dict:
-        """Record a trade execution."""
+        """Record a trade execution using shared position logic."""
+        old_qty = self.positions.get(symbol, {}).get("quantity", 0)
+        old_entry = self.positions.get(symbol, {}).get("entry_price", 0.0)
+
+        new_qty, new_entry, cash_delta, pnl = compute_fill(old_qty, old_entry, side, quantity, price)
+        self.cash += cash_delta
+
+        if new_qty == 0:
+            self.positions.pop(symbol, None)
+        else:
+            self.positions[symbol] = {"quantity": new_qty, "entry_price": new_entry}
+
         trade = {
-            "date": date,
-            "symbol": symbol,
-            "side": side,
-            "qty": qty,
-            "price": price,
-            "value": qty * price,
-            "pnl": 0.0  # calculated on close
+            "date": date, "symbol": symbol, "side": side,
+            "quantity": quantity, "price": price,
+            "value": quantity * price, "pnl": pnl,
         }
-
-        if side == "BUY":
-            self.cash -= qty * price
-            if symbol in self.positions:
-                # Average up
-                pos = self.positions[symbol]
-                total_qty = pos["qty"] + qty
-                avg_price = (pos["qty"] * pos["entry_price"] + qty * price) / total_qty
-                self.positions[symbol] = {"qty": total_qty, "entry_price": avg_price}
-            else:
-                self.positions[symbol] = {"qty": qty, "entry_price": price}
-
-        elif side == "SELL":
-            if symbol in self.positions:
-                pos = self.positions[symbol]
-                pnl = (price - pos["entry_price"]) * qty
-                trade["pnl"] = pnl
-                self.cash += qty * price
-
-                remaining = pos["qty"] - qty
-                if remaining <= 0:
-                    del self.positions[symbol]
-                else:
-                    self.positions[symbol]["qty"] = remaining
-
         self.trades.append(trade)
         return trade
 
@@ -387,7 +370,7 @@ class Backtester:
             current_prices: {symbol: price} for all held positions
         """
         positions_value = sum(
-            pos["qty"] * current_prices.get(symbol, pos["entry_price"])
+            pos["quantity"] * current_prices.get(symbol, pos["entry_price"])
             for symbol, pos in self.positions.items()
         )
         total_value = self.cash + positions_value
@@ -424,7 +407,7 @@ class Backtester:
 
 
 # ============================================================================
-# 测试入口
+# CLI test entry point
 # ============================================================================
 
 if __name__ == "__main__":

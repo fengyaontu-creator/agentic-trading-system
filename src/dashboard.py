@@ -1,13 +1,12 @@
 """
-dashboard.py — 交易结果可视化 + 报告生成
-Owner: Person E
+dashboard.py -- Trading visualization + report generation.
 
-生成以下图表：
-1. 价格走势 + 买卖点标注
-2. 累计收益曲线
-3. 持仓分布饼图
-4. 回测绩效摘要表
-5. Agent 决策流程图（用于 PPT）
+Charts:
+    1. Price chart with buy/sell markers
+    2. Cumulative return curve
+    3. Position allocation pie chart
+    4. Backtest performance summary table
+    5. Agent pipeline architecture diagram
 """
 
 import json
@@ -18,7 +17,7 @@ from typing import Dict, List, Optional
 
 
 # ============================================================================
-# 全局样式设置
+# Global plot style
 # ============================================================================
 
 def setup_plot_style():
@@ -34,7 +33,7 @@ def setup_plot_style():
 
 
 # ============================================================================
-# 图表 1：价格走势 + 买卖点
+# Chart 1: Price with buy/sell markers
 # ============================================================================
 
 def plot_price_with_signals(
@@ -60,20 +59,23 @@ def plot_price_with_signals(
             color='#2196F3', linewidth=1.5)
 
     # Buy/sell markers
-    for trade in trades:
-        # TODO: Parse trade dates and plot markers
-        # -------------------------------------------------------
-        # date = pd.to_datetime(trade['date'])
-        # if trade['side'] == 'BUY':
-        #     ax.scatter(date, trade['price'], marker='^', color='green',
-        #                s=150, zorder=5, label='Buy' if 'Buy' not in str(ax.get_legend()) else '')
-        # elif trade['side'] == 'SELL':
-        #     ax.scatter(date, trade['price'], marker='v', color='red',
-        #                s=150, zorder=5, label='Sell' if 'Sell' not in str(ax.get_legend()) else '')
-        # -------------------------------------------------------
-        pass
+    buys = [t for t in trades if t.get('side') == 'BUY']
+    sells = [t for t in trades if t.get('side') == 'SELL']
 
-    ax.set_title(f'{symbol} — Price with Trading Signals')
+    if buys:
+        ax.scatter(
+            [pd.to_datetime(t['date']) for t in buys],
+            [t['price'] for t in buys],
+            marker='^', color='#00c853', s=150, zorder=5, label='Buy',
+        )
+    if sells:
+        ax.scatter(
+            [pd.to_datetime(t['date']) for t in sells],
+            [t['price'] for t in sells],
+            marker='v', color='#d50000', s=150, zorder=5, label='Sell',
+        )
+
+    ax.set_title(f'{symbol} -- Price with Trading Signals')
     ax.set_xlabel('Date')
     ax.set_ylabel('Price ($)')
     ax.legend()
@@ -86,7 +88,7 @@ def plot_price_with_signals(
 
 
 # ============================================================================
-# 图表 2：累计收益曲线
+# Chart 2: Cumulative return curve
 # ============================================================================
 
 def plot_portfolio_performance(
@@ -115,13 +117,11 @@ def plot_portfolio_performance(
     ax1.axhline(y=initial_capital, color='gray', linestyle='--', alpha=0.5,
                 label='Initial Capital')
 
-    # TODO: Add benchmark comparison if benchmark_data is provided
-    # -------------------------------------------------------
-    # if benchmark_data is not None:
-    #     bench_normalized = benchmark_data['close'] / benchmark_data['close'].iloc[0] * initial_capital
-    #     ax1.plot(benchmark_data.index, bench_normalized, label='Benchmark (SPY)',
-    #              color='#FF9800', alpha=0.7)
-    # -------------------------------------------------------
+    if benchmark_data is not None and not benchmark_data.empty:
+        bench_col = 'close' if 'close' in benchmark_data.columns else 'Close'
+        bench_normalized = benchmark_data[bench_col] / benchmark_data[bench_col].iloc[0] * initial_capital
+        ax1.plot(benchmark_data.index, bench_normalized, label='Benchmark (SPY)',
+                 color='#FF9800', alpha=0.7)
 
     ax1.set_title('Portfolio Performance')
     ax1.set_ylabel('Portfolio Value ($)')
@@ -147,7 +147,7 @@ def plot_portfolio_performance(
 
 
 # ============================================================================
-# 图表 3：持仓分布饼图
+# Chart 3: Position allocation pie
 # ============================================================================
 
 def plot_position_allocation(
@@ -184,7 +184,7 @@ def plot_position_allocation(
 
 
 # ============================================================================
-# 图表 4：绩效摘要表
+# Chart 4: Performance summary table
 # ============================================================================
 
 def plot_performance_summary_table(
@@ -245,7 +245,7 @@ def plot_performance_summary_table(
 
 
 # ============================================================================
-# 图表 5：Agent 架构图（用于 PPT）
+# Chart 5: Agent pipeline architecture diagram
 # ============================================================================
 
 def plot_agent_architecture(
@@ -257,30 +257,54 @@ def plot_agent_architecture(
     setup_plot_style()
     fig, ax = plt.subplots(figsize=(16, 8))
     ax.axis('off')
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 6)
 
-    # TODO: Draw boxes and arrows for the 4-agent pipeline
-    # -------------------------------------------------------
-    # This is best done with matplotlib patches and annotations.
-    # Alternatively, use draw.io / PowerPoint directly.
-    #
-    # Suggested layout:
-    #
-    #  [yfinance] → [Technical Agent] ↘
-    #                                   → [Risk Agent] → [Execution Agent] → [Alpaca]
-    #  [NewsAPI]  → [Sentiment Agent] ↗
-    #
-    # -------------------------------------------------------
+    # Box styles
+    src = dict(boxstyle='round,pad=0.4', facecolor='#E8F5E9', edgecolor='#2E7D32', linewidth=1.5)
+    agent = dict(boxstyle='round,pad=0.5', facecolor='#E3F2FD', edgecolor='#1565C0', linewidth=2)
+    exe = dict(boxstyle='round,pad=0.5', facecolor='#FFF3E0', edgecolor='#E65100', linewidth=2)
+    sink = dict(boxstyle='round,pad=0.4', facecolor='#F3E5F5', edgecolor='#6A1B9A', linewidth=1.5)
+    kw = dict(ha='center', va='center', fontsize=10)
+    bkw = dict(ha='center', va='center', fontsize=11, fontweight='bold')
 
-    ax.text(0.5, 0.5, 'Agent Architecture Diagram\n(TODO: implement with patches)',
-            ha='center', va='center', fontsize=16, color='gray')
+    # Data sources
+    ax.text(0.8, 4.5, 'yfinance\n(OHLCV)', bbox=src, **kw)
+    ax.text(0.8, 2.0, 'NewsAPI\nFinViz\nAlpha Vantage', bbox=src, fontsize=9, ha='center', va='center')
 
+    # Agents
+    ax.text(3.3, 4.5, 'Technical\nAgent', bbox=agent, **bkw)
+    ax.text(3.3, 2.0, 'Sentiment\nAgent', bbox=agent, **bkw)
+    ax.text(5.8, 3.25, 'Risk\nAgent', bbox=agent, **bkw)
+    ax.text(8.0, 3.25, 'Execution\nAgent', bbox=exe, **bkw)
+
+    # Sinks
+    ax.text(9.8, 4.5, 'Alpaca\n(Paper)', bbox=sink, **kw)
+    ax.text(9.8, 2.0, 'SQLite DB\n+ CSV', bbox=sink, **kw)
+
+    # Arrows
+    ap = dict(arrowstyle='->', color='#424242', linewidth=1.8)
+    for start, end in [
+        ((1.5, 4.5), (2.3, 4.5)),    # yfinance -> Technical
+        ((1.5, 2.0), (2.3, 2.0)),    # News -> Sentiment
+        ((4.3, 4.2), (4.9, 3.6)),    # Technical -> Risk
+        ((4.3, 2.3), (4.9, 2.9)),    # Sentiment -> Risk
+        ((6.7, 3.25), (7.1, 3.25)),  # Risk -> Execution
+        ((8.9, 3.7), (9.2, 4.2)),    # Execution -> Alpaca
+        ((8.9, 2.8), (9.2, 2.3)),    # Execution -> DB
+    ]:
+        ax.annotate('', xy=end, xytext=start, arrowprops=ap)
+
+    ax.set_title('Agentic Trading System -- Pipeline Architecture',
+                 fontsize=16, fontweight='bold', pad=15)
+    plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Saved: {save_path}")
 
 
 # ============================================================================
-# 一键生成所有图表
+# Generate all charts
 # ============================================================================
 
 def generate_all_charts(
@@ -323,7 +347,7 @@ def generate_all_charts(
 
 
 # ============================================================================
-# 测试入口
+# CLI test entry point
 # ============================================================================
 
 if __name__ == "__main__":

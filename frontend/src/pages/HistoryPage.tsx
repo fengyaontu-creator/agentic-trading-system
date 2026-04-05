@@ -22,7 +22,7 @@ export default function HistoryPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <p className="text-gray-500">Loading…</p>;
+  if (loading) return <p className="text-gray-500">Loading...</p>;
   if (error) return <p className="text-red-400">{error}</p>;
   if (trades.length === 0) {
     return (

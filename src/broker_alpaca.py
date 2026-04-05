@@ -1,8 +1,9 @@
 """
 Alpaca paper-trading integration.
 
-This version does not provide a mock fallback. Valid paper-trading
-credentials must be present in `.env` or the environment.
+All functions require explicit api_key and api_secret.
+No fallback to environment variables -- callers must pass
+the current user's credentials from the database.
 """
 
 import os
@@ -14,29 +15,23 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise ValueError(f"{name} must be set for Alpaca paper trading")
-    return value
-
-
-def get_trading_client(api_key: str = None, secret_key: str = None):
+def get_trading_client(api_key: str, api_secret: str):
     """
     Initialize an Alpaca TradingClient for paper trading.
 
-    Accepts explicit credentials or falls back to environment variables.
+    Both api_key and api_secret are required -- this function
+    never reads credentials from the environment.
     """
     from alpaca.trading.client import TradingClient
 
-    api_key = api_key or require_env("ALPACA_API_KEY")
-    secret_key = secret_key or require_env("ALPACA_API_SECRET")
-    return TradingClient(api_key, secret_key, paper=True)
+    if not api_key or not api_secret:
+        raise ValueError("api_key and api_secret are required for Alpaca trading")
+    return TradingClient(api_key, api_secret, paper=True)
 
 
-def get_account_info(api_key: str = None, secret_key: str = None) -> Dict:
+def get_account_info(api_key: str, api_secret: str) -> Dict:
     """Return live paper-account information from Alpaca."""
-    client = get_trading_client(api_key, secret_key)
+    client = get_trading_client(api_key, api_secret)
     account = client.get_account()
     return {
         "id": str(account.id),
@@ -52,9 +47,9 @@ def get_account_info(api_key: str = None, secret_key: str = None) -> Dict:
     }
 
 
-def get_positions(api_key: str = None, secret_key: str = None) -> list:
+def get_positions(api_key: str, api_secret: str) -> list:
     """Return all open positions from the paper account."""
-    client = get_trading_client(api_key, secret_key)
+    client = get_trading_client(api_key, api_secret)
     positions = client.get_all_positions()
     return [
         {
@@ -89,12 +84,12 @@ def normalize_order(order) -> Dict:
     }
 
 
-def submit_market_order(symbol: str, qty: int, side: str, api_key: str = None, secret_key: str = None) -> Dict:
+def submit_market_order(symbol: str, qty: int, side: str, api_key: str, api_secret: str) -> Dict:
     """Submit a real paper market order."""
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import MarketOrderRequest
 
-    client = get_trading_client(api_key, secret_key)
+    client = get_trading_client(api_key, api_secret)
     order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
     order_request = MarketOrderRequest(
         symbol=symbol,
@@ -106,12 +101,12 @@ def submit_market_order(symbol: str, qty: int, side: str, api_key: str = None, s
     return normalize_order(order)
 
 
-def submit_limit_order(symbol: str, qty: int, side: str, limit_price: float, api_key: str = None, secret_key: str = None) -> Dict:
+def submit_limit_order(symbol: str, qty: int, side: str, limit_price: float, api_key: str, api_secret: str) -> Dict:
     """Submit a real paper limit order."""
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import LimitOrderRequest
 
-    client = get_trading_client(api_key, secret_key)
+    client = get_trading_client(api_key, api_secret)
     order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
     order_request = LimitOrderRequest(
         symbol=symbol,
@@ -124,12 +119,12 @@ def submit_limit_order(symbol: str, qty: int, side: str, limit_price: float, api
     return normalize_order(order)
 
 
-def submit_stop_order(symbol: str, qty: int, side: str, stop_price: float, api_key: str = None, secret_key: str = None) -> Dict:
+def submit_stop_order(symbol: str, qty: int, side: str, stop_price: float, api_key: str, api_secret: str) -> Dict:
     """Submit a real paper stop order."""
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import StopOrderRequest
 
-    client = get_trading_client(api_key, secret_key)
+    client = get_trading_client(api_key, api_secret)
     order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
     order_request = StopOrderRequest(
         symbol=symbol,
@@ -142,75 +137,109 @@ def submit_stop_order(symbol: str, qty: int, side: str, stop_price: float, api_k
     return normalize_order(order)
 
 
-def get_order_status(order_id: str) -> Dict:
+def get_order_status(order_id: str, api_key: str, api_secret: str) -> Dict:
     """Fetch a specific order by ID."""
-    client = get_trading_client()
+    client = get_trading_client(api_key, api_secret)
     order = client.get_order_by_id(order_id)
     return normalize_order(order)
 
 
-def get_recent_orders(limit: int = 5) -> list:
+def get_recent_orders(api_key: str, api_secret: str, limit: int = 5) -> list:
     """Return the most recent paper-trading orders."""
     from alpaca.trading.enums import QueryOrderStatus
     from alpaca.trading.requests import GetOrdersRequest
 
-    client = get_trading_client()
+    client = get_trading_client(api_key, api_secret)
     request = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=limit, nested=False)
     orders = client.get_orders(filter=request)
     return [normalize_order(order) for order in orders]
 
 
-def cancel_order(order_id: str) -> bool:
+def cancel_order(order_id: str, api_key: str, api_secret: str) -> bool:
     """Cancel a pending order by ID."""
-    client = get_trading_client()
+    client = get_trading_client(api_key, api_secret)
     client.cancel_order_by_id(order_id)
     return True
 
 
 def execute_trade(
     symbol: str,
-    signal_type: str,
+    side: str,
     quantity: int,
     price: float,
+    api_key: str,
+    api_secret: str,
     strategy: str = "MARKET",
     stop_loss: Optional[float] = None,
     take_profit: Optional[float] = None,
-    api_key: str = None,
-    secret_key: str = None,
 ) -> Optional[Dict]:
     """
     Unified execution entrypoint for the orchestrator.
-    Accepts optional user credentials; falls back to .env if not provided.
+
+    api_key and api_secret are required -- no env fallback.
     """
+    if not api_key or not api_secret:
+        raise ValueError("api_key and api_secret are required to execute trades")
     if quantity <= 0:
         return None
 
     orders = {}
     if strategy == "LIMIT":
-        orders["main"] = submit_limit_order(symbol, quantity, signal_type, price, api_key, secret_key)
+        orders["main"] = submit_limit_order(symbol, quantity, side, price, api_key, api_secret)
     elif strategy == "STOP":
-        orders["main"] = submit_stop_order(symbol, quantity, signal_type, price, api_key, secret_key)
+        orders["main"] = submit_stop_order(symbol, quantity, side, price, api_key, api_secret)
     else:
-        orders["main"] = submit_market_order(symbol, quantity, signal_type, api_key, secret_key)
+        orders["main"] = submit_market_order(symbol, quantity, side, api_key, api_secret)
 
-    if stop_loss and signal_type.upper() == "BUY":
-        orders["stop_loss"] = submit_stop_order(symbol, quantity, "SELL", stop_loss, api_key, secret_key)
-    if take_profit and signal_type.upper() == "BUY":
-        orders["take_profit"] = submit_limit_order(symbol, quantity, "SELL", take_profit, api_key, secret_key)
+    if stop_loss and side.upper() == "BUY":
+        orders["stop_loss"] = submit_stop_order(symbol, quantity, "SELL", stop_loss, api_key, api_secret)
+    if take_profit and side.upper() == "BUY":
+        orders["take_profit"] = submit_limit_order(symbol, quantity, "SELL", take_profit, api_key, api_secret)
 
     return orders
 
 
+def reconcile_positions(user_id: str, api_key: str, api_secret: str) -> Dict:
+    """Compare Alpaca positions with local DB and return discrepancies.
+
+    Returns {"ok": bool, "diffs": [...]}.  Each diff is a dict with
+    symbol, broker_qty, db_qty so the caller can decide how to resolve.
+    """
+    import database as db  # local import to avoid circular at module level
+
+    broker_positions = get_positions(api_key, api_secret)
+    broker_map = {p["symbol"]: int(p["qty"]) for p in broker_positions}
+
+    db_positions = db.load_positions(user_id)
+    db_map = {p["symbol"]: p["quantity"] for p in db_positions}
+
+    all_symbols = set(broker_map) | set(db_map)
+    diffs = []
+    for sym in sorted(all_symbols):
+        bq = broker_map.get(sym, 0)
+        dq = db_map.get(sym, 0)
+        if bq != dq:
+            diffs.append({"symbol": sym, "broker_qty": bq, "db_qty": dq})
+
+    return {"ok": len(diffs) == 0, "diffs": diffs}
+
+
 if __name__ == "__main__":
+    # CLI test -- reads from .env explicitly, never implicitly
+    api_key = os.getenv("ALPACA_API_KEY")
+    api_secret = os.getenv("ALPACA_API_SECRET")
+    if not api_key or not api_secret:
+        print("Set ALPACA_API_KEY and ALPACA_API_SECRET in .env to test")
+        sys.exit(1)
+
     print("Testing Alpaca paper-trading integration...")
     print("\nAccount info:")
-    print(get_account_info())
+    print(get_account_info(api_key, api_secret))
     print("\nPositions:")
-    print(get_positions())
+    print(get_positions(api_key, api_secret))
     print("\nRecent orders:")
-    print(get_recent_orders())
+    print(get_recent_orders(api_key, api_secret))
 
-    # Safety: only place an order when explicitly requested from the terminal.
     if "--submit-test-order" in sys.argv:
         print("\nSubmitting test paper order: BUY 1 AAPL")
-        print(execute_trade("AAPL", "BUY", 1, 0.0, strategy="MARKET"))
+        print(execute_trade("AAPL", "BUY", 1, 0.0, api_key, api_secret, strategy="MARKET"))

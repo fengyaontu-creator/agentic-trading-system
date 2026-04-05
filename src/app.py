@@ -1,15 +1,15 @@
 """
-app.py — Streamlit web frontend
+app.py --Streamlit web frontend
 
 Run locally:
     streamlit run src/app.py
 
 Pages:
     1. Login / Register
-    2. Dashboard    — portfolio overview, positions, P&L chart
-    3. Signals      — today's analysis signals
-    4. History      — trade history
-    5. Settings     — watchlist + Alpaca credentials
+    2. Dashboard    --portfolio overview, positions, P&L chart
+    3. Signals      --today's analysis signals
+    4. History      --trade history
+    5. Settings     --watchlist + Alpaca credentials
 """
 
 import os
@@ -27,7 +27,7 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(__file__))
 import database as db
 
-# ── Page config ───────────────────────────────────────────────────────────────
+# --Page config ---------------------------------------------------------------
 st.set_page_config(
     page_title="AI Trading System",
     page_icon="📈",
@@ -35,7 +35,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Session state helpers ─────────────────────────────────────────────────────
+# --Session state helpers -----------------------------------------------------
 def is_logged_in() -> bool:
     return st.session_state.get("user_id") is not None
 
@@ -47,7 +47,7 @@ def logout():
     st.session_state.pop("username", None)
     st.rerun()
 
-# ── Auth page ─────────────────────────────────────────────────────────────────
+# --Auth page -----------------------------------------------------------------
 def page_auth():
     st.title("📈 AI Trading System")
     st.markdown("LLM-powered automated trading with multi-user support.")
@@ -96,7 +96,7 @@ def page_auth():
                     st.rerun()
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# --Sidebar -------------------------------------------------------------------
 def sidebar():
     with st.sidebar:
         st.markdown(f"### {st.session_state.get('username', '')}")
@@ -112,7 +112,7 @@ def sidebar():
     return page
 
 
-# ── Dashboard page ────────────────────────────────────────────────────────────
+# --Dashboard page ------------------------------------------------------------
 def page_dashboard():
     user_id = current_user()
     st.title("Dashboard")
@@ -127,7 +127,7 @@ def page_dashboard():
     pnl = total - 100000
     pnl_pct = pnl / 100000 * 100
 
-    # ── KPI row ──
+    # --KPI row --
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Portfolio Value", f"${total:,.2f}")
     col2.metric("Cash", f"${cash:,.2f}")
@@ -136,7 +136,7 @@ def page_dashboard():
 
     st.markdown("---")
 
-    # ── Positions ──
+    # --Positions --
     positions = db.load_positions(user_id)
     col_left, col_right = st.columns([3, 2])
 
@@ -174,7 +174,7 @@ def page_dashboard():
         else:
             st.info("No positions to display.")
 
-    # ── Trade history chart ──
+    # --Trade history chart --
     st.markdown("---")
     st.subheader("Recent Trade Activity")
     trades = db.get_trade_history(user_id, limit=50)
@@ -194,7 +194,7 @@ def page_dashboard():
         st.info("No trades yet.")
 
 
-# ── Signals page ──────────────────────────────────────────────────────────────
+# --Signals page --------------------------------------------------------------
 def page_signals():
     user_id = current_user()
     st.title("Today's Signals")
@@ -211,7 +211,7 @@ def page_signals():
         color = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}.get(signal, "⚪")
         executed = "✅ Executed" if sig["executed"] else "⏳ Pending"
 
-        with st.expander(f"{color} **{sig['symbol']}** — {signal} ({sig['confidence']:.0%} confidence)  {executed}"):
+        with st.expander(f"{color} **{sig['symbol']}** --{signal} ({sig['confidence']:.0%} confidence)  {executed}"):
             col1, col2 = st.columns(2)
             col1.metric("Technical Score", f"{sig.get('technical_score', 0):.2f}")
             col2.metric("Sentiment Score", f"{sig.get('sentiment_score', 0):+.2f}")
@@ -228,7 +228,7 @@ def page_signals():
         st.dataframe(df, use_container_width=True, hide_index=True)
 
 
-# ── History page ──────────────────────────────────────────────────────────────
+# --History page --------------------------------------------------------------
 def page_history():
     user_id = current_user()
     st.title("Trade History")
@@ -270,12 +270,12 @@ def page_history():
     st.plotly_chart(fig, use_container_width=True)
 
 
-# ── Settings page ─────────────────────────────────────────────────────────────
+# --Settings page -------------------------------------------------------------
 def page_settings():
     user_id = current_user()
     st.title("Settings")
 
-    # ── Watchlist ──
+    # --Watchlist --
     st.subheader("Stock Watchlist")
     current_symbols = db.get_user_symbols(user_id)
     symbols_str = st.text_input(
@@ -293,7 +293,53 @@ def page_settings():
 
     st.markdown("---")
 
-    # ── Alpaca credentials ──
+    # --Trading parameters --
+    st.subheader("Trading Parameters")
+    params = db.load_user_settings(user_id)
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        risk_per_trade = st.slider(
+            "Risk per trade (%)", 0.5, 10.0,
+            value=params["risk_per_trade"] * 100, step=0.5,
+            help="Maximum portfolio percentage risked on a single trade",
+        )
+        max_concentration = st.slider(
+            "Max concentration (%)", 5.0, 50.0,
+            value=params["max_concentration"] * 100, step=5.0,
+            help="Maximum portfolio percentage in one stock",
+        )
+        min_confidence = st.slider(
+            "Min confidence", 0.1, 0.9,
+            value=params["min_confidence"], step=0.05,
+            help="Minimum signal confidence required to trade",
+        )
+    with col_b:
+        stop_loss_mult = st.slider(
+            "Stop-loss multiplier", 1.0, 5.0,
+            value=params["stop_loss_multiplier"], step=0.5,
+            help="Volatility multiplier for dynamic stop-loss",
+        )
+        take_profit_pct = st.slider(
+            "Take-profit target (%)", 1.0, 20.0,
+            value=params["take_profit_pct"] * 100, step=1.0,
+            help="Percentage gain target for take-profit",
+        )
+
+    if st.button("Save Trading Parameters", use_container_width=True):
+        db.save_user_settings(
+            user_id,
+            risk_per_trade=risk_per_trade / 100,
+            max_concentration=max_concentration / 100,
+            stop_loss_multiplier=stop_loss_mult,
+            take_profit_pct=take_profit_pct / 100,
+            min_confidence=min_confidence,
+        )
+        st.success("Trading parameters saved.")
+
+    st.markdown("---")
+
+    # --Alpaca credentials --
     st.subheader("Alpaca Paper Trading Credentials")
     creds = db.get_alpaca_credentials(user_id)
     if creds:
@@ -317,7 +363,7 @@ def page_settings():
     st.caption(f"User ID: `{user_id}` | Next analysis: 07:30 ET | Next trade: 09:30 ET")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# --Main ----------------------------------------------------------------------
 def main():
     db.init_db()
 

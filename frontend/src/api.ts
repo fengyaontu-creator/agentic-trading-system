@@ -39,9 +39,11 @@ export const api = {
   updateAlpaca: (api_key: string, api_secret: string) =>
     req("PUT", "/api/settings/alpaca", { api_key, api_secret }),
   deleteAlpaca: () => req("DELETE", "/api/settings/alpaca"),
+  updateTradingParams: (params: TradingParams) =>
+    req("PUT", "/api/settings/trading", params),
 };
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// -- Types --------------------------------------------------------------------
 
 export interface Portfolio {
   cash: number;
@@ -86,7 +88,17 @@ export interface SignalsData {
   history: Signal[];
 }
 
+export interface TradingParams {
+  risk_per_trade: number;
+  max_concentration: number;
+  stop_loss_multiplier: number;
+  take_profit_pct: number;
+  min_confidence: number;
+  strategy: string;
+}
+
 export interface SettingsData {
   symbols: string[];
   has_alpaca: boolean;
+  trading_params: TradingParams;
 }

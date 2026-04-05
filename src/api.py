@@ -1,5 +1,5 @@
 """
-api.py — FastAPI backend
+api.py -- FastAPI backend
 
 Install:  pip install fastapi uvicorn python-jose[cryptography]
 Run:      uvicorn src.api:app --reload --port 8000
@@ -25,15 +25,18 @@ import database as db
 
 db.init_db()
 
-SECRET_KEY = os.getenv("JWT_SECRET", "change-this-secret-in-production")
+SECRET_KEY = os.getenv("JWT_SECRET")
+if not SECRET_KEY:
+    raise RuntimeError("JWT_SECRET not set -- add a random string to your .env file")
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_DAYS = 7
 
 app = FastAPI(title="AI Trading System API", docs_url="/api/docs")
 
+_cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in _cors_origins],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,7 +45,7 @@ app.add_middleware(
 security = HTTPBearer()
 
 
-# ── JWT helpers ───────────────────────────────────────────────────────────────
+# --JWT helpers ---------------------------------------------------------------
 
 def _make_token(user_id: str, username: str) -> str:
     exp = datetime.now(timezone.utc) + timedelta(days=TOKEN_EXPIRE_DAYS)
@@ -58,7 +61,7 @@ def _current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
-# ── Request models ─────────────────────────────────────────────────────────────
+# --Request models -------------------------------------------------------------
 
 class AuthReq(BaseModel):
     username: str
@@ -71,8 +74,16 @@ class AlpacaReq(BaseModel):
     api_key: str
     api_secret: str
 
+class TradingParamsReq(BaseModel):
+    risk_per_trade: float = 0.02
+    max_concentration: float = 0.10
+    stop_loss_multiplier: float = 2.0
+    take_profit_pct: float = 0.05
+    min_confidence: float = 0.3
+    strategy: str = "intraday"
 
-# ── Auth ───────────────────────────────────────────────────────────────────────
+
+# --Auth -----------------------------------------------------------------------
 
 @app.post("/api/auth/register")
 def register(req: AuthReq):
@@ -95,7 +106,7 @@ def login(req: AuthReq):
             "user_id": user["user_id"], "username": user["username"]}
 
 
-# ── Dashboard ──────────────────────────────────────────────────────────────────
+# --Dashboard ------------------------------------------------------------------
 
 @app.get("/api/dashboard")
 def dashboard(user=Depends(_current_user)):
@@ -107,7 +118,7 @@ def dashboard(user=Depends(_current_user)):
     }
 
 
-# ── Signals ────────────────────────────────────────────────────────────────────
+# --Signals --------------------------------------------------------------------
 
 @app.get("/api/signals")
 def signals(user=Depends(_current_user)):
@@ -119,14 +130,14 @@ def signals(user=Depends(_current_user)):
     }
 
 
-# ── History ────────────────────────────────────────────────────────────────────
+# --History --------------------------------------------------------------------
 
 @app.get("/api/history")
 def history(user=Depends(_current_user)):
     return {"trades": db.get_trade_history(user["user_id"], limit=200)}
 
 
-# ── Settings ───────────────────────────────────────────────────────────────────
+# --Settings -------------------------------------------------------------------
 
 @app.get("/api/settings")
 def get_settings(user=Depends(_current_user)):
@@ -135,6 +146,7 @@ def get_settings(user=Depends(_current_user)):
     return {
         "symbols": db.get_user_symbols(uid),
         "has_alpaca": bool(creds and creds.get("api_key")),
+        "trading_params": db.load_user_settings(uid),
     }
 
 
@@ -145,6 +157,12 @@ def update_watchlist(req: WatchlistReq, user=Depends(_current_user)):
         raise HTTPException(400, "At least one symbol required")
     db.set_user_symbols(user["user_id"], symbols)
     return {"symbols": symbols}
+
+
+@app.put("/api/settings/trading")
+def update_trading_params(req: TradingParamsReq, user=Depends(_current_user)):
+    db.save_user_settings(user["user_id"], **req.model_dump())
+    return {"status": "saved", "params": req.model_dump()}
 
 
 @app.put("/api/settings/alpaca")
@@ -161,7 +179,19 @@ def delete_alpaca(user=Depends(_current_user)):
     return {"status": "removed"}
 
 
-# ── Serve React build in production ───────────────────────────────────────────
+# --Reconciliation ------------------------------------------------------------
+
+@app.get("/api/reconcile")
+def reconcile(user=Depends(_current_user)):
+    uid = user["user_id"]
+    creds = db.get_alpaca_credentials(uid)
+    if not creds:
+        raise HTTPException(400, "Alpaca credentials not set")
+    from broker_alpaca import reconcile_positions
+    return reconcile_positions(uid, creds["api_key"], creds["api_secret"])
+
+
+# --Serve React build in production -------------------------------------------
 
 _dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 if os.path.exists(_dist):

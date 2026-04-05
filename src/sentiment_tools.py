@@ -1,15 +1,15 @@
 """
-sentiment_tools.py — 多源情绪分析工具
-Owner: Person B
+sentiment_tools.py -- Multi-source sentiment analysis.
 
-替换模板中 get_market_sentiment 里的随机情绪数据。
-接入真实新闻源 + 可选社交媒体情绪，多源融合后输出情绪评分。
+Fuses news + social-media sentiment into a single score.
 
-数据源：
-1. NewsAPI (newsapi.org) — 主数据源，免费 tier 可用
-2. FinViz headlines — 备用数据源（网页抓取，无需 API key）
+Data sources:
+    1. NewsAPI (newsapi.org) -- primary, free tier available
+    2. FinViz headlines -- fallback via web scraping (no API key needed)
+    3. Alpha Vantage News Sentiment (optional)
 """
 
+import logging
 import os
 import re
 import json
@@ -19,9 +19,11 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 from langchain_core.tools import tool
 
+log = logging.getLogger(__name__)
+
 
 # ============================================================================
-# 新闻数据获取
+# News data fetching
 # ============================================================================
 
 def fetch_news_headlines(symbol: str, days: int = 7) -> List[str]:
@@ -41,7 +43,7 @@ def fetch_news_headlines(symbol: str, days: int = 7) -> List[str]:
     """
     api_key = os.getenv("NEWS_API_KEY")
     if not api_key:
-        print(f"WARNING: NEWS_API_KEY not set, returning empty headlines for {symbol}")
+        log.warning(f"NEWS_API_KEY not set, returning empty headlines for {symbol}")
         return []
 
     from_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
@@ -66,14 +68,14 @@ def fetch_news_headlines(symbol: str, days: int = 7) -> List[str]:
         ]
         return headlines
     except requests.exceptions.RequestException as e:
-        print(f"ERROR: NewsAPI request failed for {symbol}: {e}")
+        log.error(f"NewsAPI request failed for {symbol}: {e}")
         return []
 
 
 def fetch_finviz_sentiment(symbol: str) -> Dict:
     """
     Scrape FinViz for analyst ratings and news headlines.
-    No API key needed — uses web scraping.
+    No API key needed -- uses web scraping.
 
     Args:
         symbol: Stock ticker
@@ -99,7 +101,7 @@ def fetch_finviz_sentiment(symbol: str) -> Dict:
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
-        print(f"ERROR: FinViz request failed for {symbol}: {e}")
+        log.error(f"FinViz request failed for {symbol}: {e}")
         return {"headlines": [], "analyst_rating": "N/A"}
 
     soup = BeautifulSoup(response.text, "html.parser")
@@ -128,7 +130,7 @@ def fetch_finviz_sentiment(symbol: str) -> Dict:
 
 
 # ============================================================================
-# LLM-based 情绪分析
+# LLM-based sentiment analysis
 # ============================================================================
 
 def analyze_headlines_with_llm(headlines: List[str], llm) -> Dict:
@@ -158,7 +160,7 @@ def analyze_headlines_with_llm(headlines: List[str], llm) -> Dict:
             "Analyze each headline and rate its market sentiment from -1.0 (very bearish) "
             "to +1.0 (very bullish). Focus on the likely impact on the stock price.\n\n"
             "Rules for the JSON output:\n"
-            "- Respond with ONLY a valid JSON object — no markdown, no extra text\n"
+            "- Respond with ONLY a valid JSON object -- no markdown, no extra text\n"
             "- The 'reason' field must be plain ASCII, no quotes, no newlines, max 15 words\n"
             "- Do NOT escape apostrophes or use smart quotes inside string values\n\n"
             "Format:\n"
@@ -181,14 +183,14 @@ def analyze_headlines_with_llm(headlines: List[str], llm) -> Dict:
         response = chain.invoke({"headlines": headlines_text})
         content = response.content
 
-        # Extract the outermost {...} block — handles fences, leading/trailing text,
+        # Extract the outermost {...} block -- handles fences, leading/trailing text,
         # and stray characters that break a simple strip approach.
         match = re.search(r"\{.*\}", content, flags=re.DOTALL)
         if not match:
             raise json.JSONDecodeError("No JSON object found in LLM response", content, 0)
         parsed = json.loads(match.group())
     except json.JSONDecodeError as e:
-        print(f"ERROR: Failed to parse LLM JSON response: {e}")
+        log.error(f"Failed to parse LLM JSON response: {e}")
         return {
             "average_score": 0.0,
             "label": "neutral",
@@ -196,7 +198,7 @@ def analyze_headlines_with_llm(headlines: List[str], llm) -> Dict:
             "breakdown": []
         }
     except Exception as e:
-        print(f"ERROR: LLM call failed: {e}")
+        log.error(f"LLM call failed: {e}")
         return {
             "average_score": 0.0,
             "label": "neutral",
@@ -213,7 +215,7 @@ def analyze_headlines_with_llm(headlines: List[str], llm) -> Dict:
 
 
 # ============================================================================
-# 多源融合
+# Multi-source fusion
 # ============================================================================
 
 def fuse_sentiment_scores(
@@ -293,7 +295,7 @@ def fuse_sentiment_scores(
 
 
 # ============================================================================
-# Alpha Vantage 情绪数据
+# Alpha Vantage sentiment data
 # ============================================================================
 
 def fetch_alpha_vantage_sentiment(symbol: str) -> Dict:
@@ -305,7 +307,7 @@ def fetch_alpha_vantage_sentiment(symbol: str) -> Dict:
     """
     api_key = os.getenv("ALPHA_VANTAGE_API_KEY")
     if not api_key:
-        print(f"WARNING: ALPHA_VANTAGE_API_KEY not set, skipping for {symbol}")
+        log.warning(f"ALPHA_VANTAGE_API_KEY not set, skipping for {symbol}")
         return {"score": 0.0, "num_articles": 0, "available": False}
 
     url = "https://www.alphavantage.co/query"
@@ -325,7 +327,7 @@ def fetch_alpha_vantage_sentiment(symbol: str) -> Dict:
         if not feed:
             return {"score": 0.0, "num_articles": 0, "available": False}
 
-        # Each article has ticker_sentiment list — find the score for our symbol
+        # Each article has ticker_sentiment list -- find the score for our symbol
         scores = []
         for article in feed:
             for ticker_data in article.get("ticker_sentiment", []):
@@ -340,12 +342,12 @@ def fetch_alpha_vantage_sentiment(symbol: str) -> Dict:
         return {"score": round(avg_score, 4), "num_articles": len(scores), "available": True}
 
     except requests.exceptions.RequestException as e:
-        print(f"ERROR: Alpha Vantage request failed for {symbol}: {e}")
+        log.error(f"Alpha Vantage request failed for {symbol}: {e}")
         return {"score": 0.0, "num_articles": 0, "available": False}
 
 
 # ============================================================================
-# 主工具（替换模板中的 @tool get_market_sentiment）
+# Main tool (replaces the template @tool get_market_sentiment)
 # ============================================================================
 
 @tool
@@ -354,7 +356,7 @@ def get_market_sentiment(symbol: str) -> str:
     Get multi-source market sentiment analysis for a symbol.
 
     Combines:
-    1. NewsAPI headlines → LLM sentiment scoring
+    1. NewsAPI headlines -> LLM sentiment scoring
     2. FinViz headlines / analyst ratings
 
     Args:
@@ -377,7 +379,7 @@ def get_market_sentiment(symbol: str) -> str:
             temperature=0,
         )
     except Exception as e:
-        print(f"WARNING: LLM unavailable, sentiment scoring disabled: {e}")
+        log.warning(f"LLM unavailable, sentiment scoring disabled: {e}")
 
     # --- Source 1: NewsAPI + LLM scoring ---
     news_headlines = fetch_news_headlines(symbol)
@@ -460,7 +462,7 @@ def get_market_sentiment(symbol: str) -> str:
 
 
 # ============================================================================
-# 测试入口
+# CLI test entry point
 # ============================================================================
 
 if __name__ == "__main__":

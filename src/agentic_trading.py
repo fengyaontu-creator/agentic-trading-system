@@ -1,46 +1,35 @@
 """
-Main orchestrator for the agentic trading system.
+agentic_trading.py -- Main orchestrator for the agentic trading system.
 
-Person A scope:
-1. Coordinate module integration
-2. Use real market data from yfinance
-3. Preserve technical indicators
-4. Add a quantitative confidence boost for technical analysis
+Coordinates technical, sentiment, risk, and execution agents.
+Uses real market data from yfinance with quantitative confidence boost.
 """
 
 import json
 import os
 from datetime import datetime
-from enum import Enum
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from backtester import Backtester
+from backtester import Backtester, calculate_dynamic_stop_loss, check_concentration_limit
 from broker_alpaca import execute_trade as alpaca_execute_trade
 from data_tools import fetch_market_data
+from position import compute_fill
 from sentiment_tools import get_market_sentiment
 import database as db
 
 
-class SignalType(str, Enum):
-    BUY = "BUY"
-    SELL = "SELL"
-    HOLD = "HOLD"
-
-
-class TradingSignal(BaseModel):
-    symbol: str
-    signal_type: SignalType
-    confidence: float = Field(ge=0.0, le=1.0)
-    price: float
-    timestamp: str
-    reason: str
-    technical_score: float = 0.0
-    sentiment_score: float = 0.0
+class TradingParams(BaseModel):
+    """Per-user trading parameters -- loaded from DB, configurable via UI."""
+    risk_per_trade: float = 0.02        # max portfolio % loss per trade
+    max_concentration: float = 0.10     # max % of portfolio in one stock
+    stop_loss_multiplier: float = 2.0   # volatility multiplier for stop-loss
+    take_profit_pct: float = 0.05       # take-profit target %
+    min_confidence: float = 0.3         # minimum signal confidence to trade
 
 
 class Position(BaseModel):
@@ -70,63 +59,25 @@ def parse_json_response(response_text: str) -> Dict:
 
 
 class SentimentAnalysisAgent:
-    """LLM wrapper around the sentiment tool with a safe fallback."""
+    """Thin wrapper -- the sentiment tool handles LLM headline scoring internally."""
 
     def __init__(self, llm: Optional[ChatOpenAI]):
         self.llm = llm
-        self.prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    """You are an expert in market sentiment analysis.
-
-Analyze the provided sentiment data and return a JSON object:
-{{
-  "sentiment_score": -1.0 to 1.0,
-  "sentiment_impact": "positive" | "negative" | "neutral",
-  "reasoning": "brief explanation",
-  "confidence_adjustment": -0.2 to 0.2
-}}""",
-                ),
-                ("human", "{input}"),
-            ]
-        )
-        self.chain = self.prompt | self.llm if self.llm else None
 
     def analyze(self, symbol: str) -> Dict:
-        sentiment_data = json.loads(get_market_sentiment.invoke({"symbol": symbol}))
-
-        if not self.chain:
-            score = float(sentiment_data.get("sentiment_score", 0.0))
-            if score > 0.15:
-                impact = "positive"
-            elif score < -0.15:
-                impact = "negative"
-            else:
-                impact = "neutral"
-            return {
-                "sentiment_score": score,
-                "sentiment_impact": impact,
-                "reasoning": sentiment_data.get("description", "Fallback sentiment mode"),
-                "confidence_adjustment": 0.0,
-            }
-
-        input_text = f"""Analyze sentiment for {symbol} and determine its impact on trading decisions.
-
-Sentiment Data:
-{json.dumps(sentiment_data, indent=2)}
-"""
-        try:
-            response = self.chain.invoke({"input": input_text})
-            return parse_json_response(response.content)
-        except Exception as exc:
-            print(f"Sentiment agent fallback triggered: {exc}")
-            return {
-                "sentiment_score": float(sentiment_data.get("sentiment_score", 0.0)),
-                "sentiment_impact": "neutral",
-                "reasoning": "Using raw sentiment tool output because LLM parsing failed",
-                "confidence_adjustment": 0.0,
-            }
+        data = json.loads(get_market_sentiment.invoke({"symbol": symbol}))
+        score = float(data.get("sentiment_score", 0.0))
+        if score > 0.15:
+            impact = "positive"
+        elif score < -0.15:
+            impact = "negative"
+        else:
+            impact = "neutral"
+        return {
+            "sentiment_score": score,
+            "sentiment_impact": impact,
+            "reasoning": data.get("description", ""),
+        }
 
 
 class TechnicalAnalysisAgent:
@@ -187,50 +138,59 @@ Review the market data and return a JSON object:
                 "technical_score": 0.0,
                 "key_indicators": [],
                 "ml_signal": {"signal": "HOLD", "confidence_boost": 0.0, "score": 0, "reasons": []},
+                "current_price": 0.0,
+                "volatility": 0.0,
             }
 
         if not self.chain:
-            return self._fallback_analysis(market_data)
-
-        input_text = f"""Analyze {symbol} and provide a trading recommendation.
+            analysis = self._fallback_analysis(market_data)
+        else:
+            input_text = f"""Analyze {symbol} and provide a trading recommendation.
 
 Market Data:
 {json.dumps(market_data, indent=2)}
 """
+            try:
+                response = self.chain.invoke({"input": input_text})
+                analysis = parse_json_response(response.content)
+            except Exception as exc:
+                # LLM parse failed -- use quantitative fallback
+                analysis = self._fallback_analysis(market_data)
+            else:
+                ml_signal = market_data.get("ml_signal", {})
+                quant_signal = ml_signal.get("signal", "HOLD")
+                llm_signal = analysis.get("signal", "HOLD")
 
-        try:
-            response = self.chain.invoke({"input": input_text})
-            analysis = parse_json_response(response.content)
-        except Exception as exc:
-            print(f"Technical agent fallback triggered: {exc}")
-            return self._fallback_analysis(market_data)
+                opposite = {("BUY", "SELL"), ("SELL", "BUY")}
+                if (quant_signal, llm_signal) in opposite:
+                    analysis["signal"] = "HOLD"
+                    analysis["confidence"] = 0.0
+                    analysis["reasoning"] = (
+                        f"Quant ({quant_signal}) and LLM ({llm_signal}) disagree -- defaulting to HOLD"
+                    )
+                elif ml_signal.get("confidence_boost", 0) and quant_signal == llm_signal:
+                    original_conf = float(analysis.get("confidence", 0.5))
+                    boosted_conf = min(1.0, original_conf + float(ml_signal["confidence_boost"]))
+                    analysis["confidence"] = round(boosted_conf, 2)
+                    reasons = ", ".join(ml_signal.get("reasons", []))
+                    analysis["reasoning"] = (
+                        f"{analysis.get('reasoning', '')} [Quant boost: {reasons}]".strip()
+                    )
 
-        ml_signal = market_data.get("ml_signal", {})
-        quant_signal = ml_signal.get("signal", "HOLD")
-        llm_signal = analysis.get("signal", "HOLD")
+                analysis["ml_signal"] = ml_signal
 
-        # If quant and LLM contradict each other, fall back to HOLD
-        opposite = {("BUY", "SELL"), ("SELL", "BUY")}
-        if (quant_signal, llm_signal) in opposite:
-            analysis["signal"] = "HOLD"
-            analysis["confidence"] = 0.0
-            analysis["reasoning"] = f"Quant ({quant_signal}) and LLM ({llm_signal}) disagree — defaulting to HOLD"
-        elif ml_signal.get("confidence_boost", 0) and quant_signal == llm_signal:
-            original_conf = float(analysis.get("confidence", 0.5))
-            boosted_conf = min(1.0, original_conf + float(ml_signal["confidence_boost"]))
-            analysis["confidence"] = round(boosted_conf, 2)
-            reasons = ", ".join(ml_signal.get("reasons", []))
-            analysis["reasoning"] = f"{analysis.get('reasoning', '')} [Quant boost: {reasons}]".strip()
-
-        analysis["ml_signal"] = ml_signal
+        analysis["current_price"] = float(market_data.get("current_price", 0.0))
+        analysis["volatility"] = float(market_data.get("volatility", 0.0))
         return analysis
 
 
 class RiskManagementAgent:
-    """Simplified risk layer until the teammate module is fully integrated."""
+    """Risk assessment using VaR-based sizing, dynamic stops, and concentration limits.
+    All thresholds come from per-user TradingParams."""
 
-    def __init__(self, llm: Optional[ChatOpenAI]):
+    def __init__(self, llm: Optional[ChatOpenAI], params: TradingParams = None):
         self.llm = llm
+        self.params = params or TradingParams()
 
     def assess(
         self,
@@ -240,47 +200,71 @@ class RiskManagementAgent:
         volatility: float,
         symbol: str = "",
     ) -> Dict:
+        p = self.params
+        stop_loss = calculate_dynamic_stop_loss(
+            current_price, volatility, multiplier=p.stop_loss_multiplier,
+        )
+        take_profit = round(current_price * (1 + p.take_profit_pct), 2)
+        risk_level = "LOW" if volatility < 0.015 else "MEDIUM" if volatility < 0.03 else "HIGH"
+
         if signal.get("signal") == "HOLD":
             return {
                 "position_size": 0,
-                "risk_assessment": "LOW",
-                "reasoning": "No trade recommended from technical analysis",
-                "stop_loss": round(current_price * 0.97, 2),
-                "take_profit": round(current_price * 1.05, 2),
+                "risk_level": risk_level,
+                "reasoning": "No trade recommended",
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
                 "should_trade": False,
             }
 
-        max_position_value = portfolio_state.portfolio_value * 0.10
-        risk_adjustment = max(0.25, 1 - (volatility * 10))
-        existing = portfolio_state.positions.get(symbol)
         action = signal.get("signal", "HOLD")
+        confidence = signal.get("confidence", 0.0)
+        existing = portfolio_state.positions.get(symbol)
 
-        if action == "SELL":
-            if existing and existing.quantity > 0:
-                # Close existing long — sell all shares held
-                position_size = existing.quantity
-                reasoning = f"Closing long position of {existing.quantity} shares"
-            else:
-                # No long position — open short, same sizing as a new long
-                short_value = max_position_value * signal.get("confidence", 0.0) * risk_adjustment
-                position_size = int(min(short_value, portfolio_state.cash) / current_price)
-                reasoning = f"Opening short, 10% max with volatility adjustment ({volatility:.4f})"
-        else:  # BUY
-            existing_value = (existing.quantity * current_price) if existing else 0.0
-            headroom = max(0.0, max_position_value - existing_value)
-            target_value = headroom * signal.get("confidence", 0.0) * risk_adjustment
-            position_size = int(min(target_value, portfolio_state.cash) / current_price)
-            reasoning = f"10% max allocation with volatility adjustment ({volatility:.4f}), existing={existing_value:.0f}"
+        if action == "SELL" and existing and existing.quantity > 0:
+            return {
+                "position_size": existing.quantity,
+                "risk_level": risk_level,
+                "reasoning": f"Closing long of {existing.quantity} shares",
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "should_trade": True,
+            }
 
-        risk_label = "LOW" if volatility < 0.015 else "MEDIUM" if volatility < 0.03 else "HIGH"
+        # New BUY or new SHORT -- VaR-based sizing with concentration check
+        max_risk_dollar = portfolio_state.portfolio_value * p.risk_per_trade
+        risk_per_share = current_price - stop_loss
+        max_shares = int(max_risk_dollar / risk_per_share) if risk_per_share > 0 else 0
+        position_size = int(max_shares * confidence)
+
+        existing_values = {
+            s: pos.quantity * pos.current_price
+            for s, pos in portfolio_state.positions.items()
+        }
+        proposed_value = position_size * current_price
+        concentration = check_concentration_limit(
+            existing_values, portfolio_state.portfolio_value, symbol, proposed_value,
+            max_concentration=p.max_concentration,
+        )
+
+        should_trade = (
+            concentration["allowed"]
+            and position_size > 0
+            and (action == "SELL" or proposed_value <= portfolio_state.cash)
+            and confidence >= p.min_confidence
+            and risk_level != "HIGH"
+        )
 
         return {
-            "position_size": max(0, position_size),
-            "risk_assessment": risk_label,
-            "reasoning": reasoning,
-            "stop_loss": round(current_price * 0.97, 2),
-            "take_profit": round(current_price * 1.05, 2),
-            "should_trade": position_size > 0 and risk_label != "HIGH",
+            "position_size": max(0, position_size) if should_trade else 0,
+            "risk_level": risk_level,
+            "reasoning": (
+                f"VaR sizing: risk/trade=${max_risk_dollar:.0f}, "
+                f"vol={volatility * 100:.2f}%, {concentration['reason']}"
+            ),
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "should_trade": should_trade,
         }
 
 
@@ -312,28 +296,28 @@ class ExecutionAgent:
     def execute_trade(
         self,
         symbol: str,
-        signal_type: str,
+        side: str,
         quantity: int,
         price: float,
+        api_key: str,
+        api_secret: str,
         strategy: str = "MARKET",
         stop_loss: float = None,
         take_profit: float = None,
-        api_key: str = None,
-        secret_key: str = None,
     ) -> Optional[Dict]:
         if quantity <= 0:
             return None
 
         result = alpaca_execute_trade(
             symbol=symbol,
-            signal_type=signal_type,
+            side=side,
             quantity=quantity,
             price=price,
+            api_key=api_key,
+            api_secret=api_secret,
             strategy=strategy,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            api_key=api_key,
-            secret_key=secret_key,
         )
         if result and result.get("main"):
             order = result["main"]
@@ -357,9 +341,10 @@ class TradingOrchestrator:
                 temperature=0.3,
             )
 
+        self.params = TradingParams(**db.load_user_settings(user_id))
         self.technical_agent = TechnicalAnalysisAgent(self.llm)
         self.sentiment_agent = SentimentAnalysisAgent(self.llm)
-        self.risk_agent = RiskManagementAgent(self.llm)
+        self.risk_agent = RiskManagementAgent(self.llm, self.params)
         self.execution_agent = ExecutionAgent(self.llm)
 
         # Load state from DB, or init fresh
@@ -390,9 +375,20 @@ class TradingOrchestrator:
         self.backtester = Backtester(initial_capital=initial_capital)
 
     def update_portfolio_value(self):
+        # Mark-to-market: fetch live prices for all positions
+        for symbol, position in self.portfolio_state.positions.items():
+            try:
+                data = json.loads(fetch_market_data.invoke({"symbol": symbol}))
+                price = float(data.get("current_price", 0))
+                if price > 0:
+                    position.current_price = price
+                    position.pnl = round((price - position.entry_price) * position.quantity, 2)
+            except Exception:
+                pass  # keep last known price if fetch fails
+
         positions_value = sum(
-            position.quantity * position.current_price
-            for position in self.portfolio_state.positions.values()
+            pos.quantity * pos.current_price
+            for pos in self.portfolio_state.positions.values()
         )
         self.portfolio_state.portfolio_value = self.portfolio_state.cash + positions_value
         # Persist to DB
@@ -405,6 +401,32 @@ class TradingOrchestrator:
         for symbol, pos in self.portfolio_state.positions.items():
             db.save_position(self.user_id, symbol, pos.quantity, pos.entry_price, pos.current_price, pos.entry_time)
 
+    def apply_fill(self, symbol: str, side: str, quantity: int, filled_price: float, order_id: str = None):
+        """Update portfolio state after a filled order and persist to DB."""
+        existing = self.portfolio_state.positions.get(symbol)
+        old_qty = existing.quantity if existing else 0
+        old_entry = existing.entry_price if existing else 0.0
+
+        new_qty, new_entry, cash_delta, _ = compute_fill(old_qty, old_entry, side, quantity, filled_price)
+        self.portfolio_state.cash += cash_delta
+
+        if new_qty == 0:
+            self.portfolio_state.positions.pop(symbol, None)
+        elif existing:
+            existing.quantity = new_qty
+            existing.entry_price = new_entry
+            existing.current_price = filled_price
+        else:
+            self.portfolio_state.positions[symbol] = Position(
+                symbol=symbol,
+                quantity=new_qty,
+                entry_price=new_entry,
+                current_price=filled_price,
+                entry_time=datetime.now().isoformat(),
+            )
+
+        self.portfolio_state.total_trades += 1
+        db.record_trade(self.user_id, symbol, side, quantity, filled_price, order_id=order_id)
 
     def process_symbol(self, symbol: str) -> Dict:
         print(f"\n{'=' * 70}")
@@ -418,9 +440,8 @@ class TradingOrchestrator:
         sentiment_analysis = self.sentiment_agent.analyze(symbol)
         print(f"[Sentiment] Score={sentiment_analysis.get('sentiment_score', 0):+.2f}")
 
-        market_data = json.loads(fetch_market_data.invoke({"symbol": symbol}))
-        current_price = float(market_data.get("current_price", 0.0))
-        volatility = float(market_data.get("volatility", 0.0))
+        current_price = technical_analysis["current_price"]
+        volatility = technical_analysis["volatility"]
 
         risk_assessment = self.risk_agent.assess(
             technical_analysis,
@@ -441,71 +462,22 @@ class TradingOrchestrator:
         order = None
         if execution_decision.get("execute") and risk_assessment.get("should_trade"):
             quantity = int(risk_assessment.get("position_size", 0))
+            side = technical_analysis.get("signal", "HOLD")
             order = self.execution_agent.execute_trade(
-                symbol,
-                technical_analysis.get("signal", "HOLD"),
-                quantity,
-                current_price,
+                symbol, side, quantity, current_price,
+                api_key=self.alpaca_key,
+                api_secret=self.alpaca_secret,
                 strategy=execution_decision.get("execution_strategy", "MARKET"),
                 stop_loss=risk_assessment.get("stop_loss"),
                 take_profit=risk_assessment.get("take_profit"),
-                api_key=self.alpaca_key,
-                secret_key=self.alpaca_secret,
             )
 
             if order:
                 filled_price = order.get("filled_avg_price") or current_price
-                signal_type = technical_analysis.get("signal", "HOLD")
-
-                if signal_type == "BUY":
-                    self.portfolio_state.cash -= quantity * filled_price
-                    existing = self.portfolio_state.positions.get(symbol)
-                    if existing and existing.quantity < 0:
-                        # Covering a short position
-                        new_qty = existing.quantity + quantity
-                        if new_qty >= 0:
-                            del self.portfolio_state.positions[symbol]
-                        else:
-                            existing.quantity = new_qty
-                    else:
-                        self.portfolio_state.positions[symbol] = Position(
-                            symbol=symbol,
-                            quantity=quantity,
-                            entry_price=filled_price,
-                            current_price=filled_price,
-                            entry_time=datetime.now().isoformat(),
-                        )
-                elif signal_type == "SELL":
-                    self.portfolio_state.cash += quantity * filled_price
-                    existing = self.portfolio_state.positions.get(symbol)
-                    if existing and existing.quantity > 0:
-                        # Closing a long position
-                        del self.portfolio_state.positions[symbol]
-                    else:
-                        # Opening a short position (negative quantity)
-                        self.portfolio_state.positions[symbol] = Position(
-                            symbol=symbol,
-                            quantity=-quantity,
-                            entry_price=filled_price,
-                            current_price=filled_price,
-                            entry_time=datetime.now().isoformat(),
-                        )
-
-                self.portfolio_state.total_trades += 1
+                self.apply_fill(symbol, side, quantity, filled_price, order.get("order_id"))
                 self.backtester.record_trade(
                     datetime.now().strftime("%Y-%m-%d"),
-                    symbol,
-                    signal_type,
-                    quantity,
-                    filled_price,
-                )
-                db.record_trade(
-                    self.user_id,
-                    symbol,
-                    signal_type,
-                    quantity,
-                    filled_price,
-                    order_id=order.get("order_id"),
+                    symbol, side, quantity, filled_price,
                 )
 
         self.update_portfolio_value()
@@ -588,7 +560,7 @@ if __name__ == "__main__":
             f"(Confidence: {result['technical_analysis'].get('confidence', 0):.1%})"
         )
         print(f"  Sentiment: {result['sentiment_analysis'].get('sentiment_score', 0):+.2f}")
-        print(f"  Risk Level: {result['risk_assessment'].get('risk_assessment', 'N/A')}")
+        print(f"  Risk Level: {result['risk_assessment'].get('risk_level', 'N/A')}")
         print(f"  Executed: {'Yes' if result['order'] else 'No'}")
         if result["order"]:
             print(f"  Order: {result['order']}")
