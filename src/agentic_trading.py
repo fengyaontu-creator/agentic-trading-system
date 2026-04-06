@@ -444,8 +444,13 @@ class TradingOrchestrator:
         old_qty = existing.quantity if existing else 0
         old_entry = existing.entry_price if existing else 0.0
 
+        friction_rate = 0.0005
+        trade_value = quantity * filled_price
+        friction_cost = trade_value * friction_rate
+
         new_qty, new_entry, cash_delta, _ = compute_fill(old_qty, old_entry, side, quantity, filled_price)
-        self.portfolio_state.cash += cash_delta
+        
+        self.portfolio_state.cash += (cash_delta - friction_cost)
 
         if new_qty == 0:
             self.portfolio_state.positions.pop(symbol, None)
@@ -464,7 +469,7 @@ class TradingOrchestrator:
 
         self.portfolio_state.total_trades += 1
         db.record_trade(self.user_id, symbol, side, quantity, filled_price, order_id=order_id)
-
+        
     def process_symbol(self, symbol: str) -> Dict:
         print(f"\n{'=' * 70}")
         print(f"Processing {symbol}")
