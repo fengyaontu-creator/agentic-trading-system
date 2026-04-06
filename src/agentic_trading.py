@@ -209,6 +209,32 @@ class RiskManagementAgent:
         # Determine action and calculate stop-loss/take-profit based on direction
         action = signal.get("signal", "HOLD")
         confidence = signal.get("confidence", 0.0)
+        existing = portfolio_state.positions.get(symbol)
+        if existing and existing.quantity != 0:
+            is_long = existing.quantity > 0
+            
+            if is_long:
+                profit_pct = (current_price - existing.entry_price) / existing.entry_price
+            else:
+                profit_pct = (existing.entry_price - current_price) / existing.entry_price
+                
+            if profit_pct > 0.10:
+                stop_offset = profit_pct - 0.03
+                dynamic_stop = existing.entry_price * (1 + stop_offset) if is_long else existing.entry_price * (1 - stop_offset)
+            elif profit_pct > 0.05:
+                dynamic_stop = existing.entry_price * 1.02 if is_long else existing.entry_price * 0.98
+            else:
+                vol_offset = volatility * p.stop_loss_multiplier
+                dynamic_stop = existing.entry_price * (1 - vol_offset) if is_long else existing.entry_price * (1 + vol_offset)
+
+            triggered = (is_long and current_price < dynamic_stop) or (not is_long and current_price > dynamic_stop)
+
+            if triggered:
+                force_action = "SELL" if is_long else "BUY"
+                if action != force_action:
+                    action = force_action
+                    signal["signal"] = force_action
+                    signal["reasoning"] = f"[Trailing Stop Triggered] Current profit {profit_pct:.1%}, crossed dynamic stop level at {dynamic_stop:.2f}"
         
         if action == "BUY":
             # Long position: stop-loss below entry, take-profit above entry
