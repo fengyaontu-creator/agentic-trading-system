@@ -8,6 +8,7 @@ services/trading_sessions.py -- Business logic for each scheduler session.
 
 import json
 import logging
+import traceback
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -62,7 +63,7 @@ def analyze_for_user(user: dict, api_key: str) -> dict:
             saved += 1
             log.info(f"[ANALYZE] {user_id}/{symbol} -> {technical.get('signal')} ({technical.get('confidence', 0):.0%})")
         except Exception as exc:
-            log.error(f"[ANALYZE] {user_id}/{symbol} failed: {exc}")
+            log.error(f"[ANALYZE] {user_id}/{symbol} failed: {exc}", exc_info=True)
 
     return {"user_id": user_id, "status": "ok", "signals_saved": saved}
 
@@ -141,7 +142,11 @@ def trade_for_user(user: dict, api_key: str) -> dict:
                 log.info(f"[TRADE] {user_id}/{symbol} -> {sig['signal']} x{quantity} @ {filled_price}")
 
         except Exception as exc:
-            log.error(f"[TRADE] {user_id}/{symbol} failed: {exc}")
+            log.error(
+                f"[TRADE] {user_id}/{symbol} failed: {exc} | "
+                f"signal={sig.get('signal')}, quantity={int(risk.get('position_size', 0) if 'risk' in locals() else 0)}",
+                exc_info=True
+            )
 
     orchestrator.update_portfolio_value()
     reconcile(user_id, creds)
@@ -199,7 +204,11 @@ def close_for_user(user: dict, api_key: str) -> dict:
                 trades += 1
                 log.info(f"[CLOSE] {user_id}/{symbol} -> {side} x{abs_qty} @ {filled_price}")
         except Exception as exc:
-            log.error(f"[CLOSE] {user_id}/{symbol} failed: {exc}")
+            log.error(
+                f"[CLOSE] {user_id}/{symbol} failed: {exc} | "
+                f"side={side}, quantity={abs_qty}",
+                exc_info=True
+            )
 
     orchestrator.update_portfolio_value()
     reconcile(user_id, creds)
@@ -220,4 +229,4 @@ def reconcile(user_id: str, creds: dict):
         else:
             log.info(f"[RECONCILE] {user_id} -- positions in sync")
     except Exception as exc:
-        log.error(f"[RECONCILE] {user_id} failed: {exc}")
+        log.error(f"[RECONCILE] {user_id} failed: {exc}", exc_info=True)

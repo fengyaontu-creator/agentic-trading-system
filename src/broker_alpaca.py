@@ -8,11 +8,14 @@ the current user's credentials from the database.
 
 import os
 import sys
+import logging
 from typing import Dict, Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+log = logging.getLogger(__name__)
 
 
 def get_trading_client(api_key: str, api_secret: str):
@@ -89,16 +92,22 @@ def submit_market_order(symbol: str, qty: int, side: str, api_key: str, api_secr
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import MarketOrderRequest
 
-    client = get_trading_client(api_key, api_secret)
-    order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
-    order_request = MarketOrderRequest(
-        symbol=symbol,
-        qty=qty,
-        side=order_side,
-        time_in_force=TimeInForce.DAY,
-    )
-    order = client.submit_order(order_data=order_request)
-    return normalize_order(order)
+    try:
+        client = get_trading_client(api_key, api_secret)
+        order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
+        order_request = MarketOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=order_side,
+            time_in_force=TimeInForce.DAY,
+        )
+        order = client.submit_order(order_data=order_request)
+        order_dict = normalize_order(order)
+        log.info(f"[MARKET] {symbol} {side} x{qty} -> order_id={order_dict.get('order_id')}, status={order_dict.get('status')}")
+        return order_dict
+    except Exception as exc:
+        log.error(f"[MARKET] {symbol} {side} x{qty} failed: {exc}", exc_info=True)
+        raise
 
 
 def submit_limit_order(symbol: str, qty: int, side: str, limit_price: float, api_key: str, api_secret: str) -> Dict:
@@ -106,17 +115,23 @@ def submit_limit_order(symbol: str, qty: int, side: str, limit_price: float, api
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import LimitOrderRequest
 
-    client = get_trading_client(api_key, api_secret)
-    order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
-    order_request = LimitOrderRequest(
-        symbol=symbol,
-        qty=qty,
-        side=order_side,
-        limit_price=limit_price,
-        time_in_force=TimeInForce.DAY,
-    )
-    order = client.submit_order(order_data=order_request)
-    return normalize_order(order)
+    try:
+        client = get_trading_client(api_key, api_secret)
+        order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
+        order_request = LimitOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=order_side,
+            limit_price=limit_price,
+            time_in_force=TimeInForce.DAY,
+        )
+        order = client.submit_order(order_data=order_request)
+        order_dict = normalize_order(order)
+        log.info(f"[LIMIT] {symbol} {side} x{qty} @ {limit_price} -> order_id={order_dict.get('order_id')}, status={order_dict.get('status')}")
+        return order_dict
+    except Exception as exc:
+        log.error(f"[LIMIT] {symbol} {side} x{qty} @ {limit_price} failed: {exc}", exc_info=True)
+        raise
 
 
 def submit_stop_order(symbol: str, qty: int, side: str, stop_price: float, api_key: str, api_secret: str) -> Dict:
@@ -124,17 +139,23 @@ def submit_stop_order(symbol: str, qty: int, side: str, stop_price: float, api_k
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import StopOrderRequest
 
-    client = get_trading_client(api_key, api_secret)
-    order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
-    order_request = StopOrderRequest(
-        symbol=symbol,
-        qty=qty,
-        side=order_side,
-        stop_price=stop_price,
-        time_in_force=TimeInForce.DAY,
-    )
-    order = client.submit_order(order_data=order_request)
-    return normalize_order(order)
+    try:
+        client = get_trading_client(api_key, api_secret)
+        order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
+        order_request = StopOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=order_side,
+            stop_price=stop_price,
+            time_in_force=TimeInForce.DAY,
+        )
+        order = client.submit_order(order_data=order_request)
+        order_dict = normalize_order(order)
+        log.info(f"[STOP] {symbol} {side} x{qty} @ {stop_price} -> order_id={order_dict.get('order_id')}, status={order_dict.get('status')}")
+        return order_dict
+    except Exception as exc:
+        log.error(f"[STOP] {symbol} {side} x{qty} @ {stop_price} failed: {exc}", exc_info=True)
+        raise
 
 
 def get_order_status(order_id: str, api_key: str, api_secret: str) -> Dict:
@@ -181,22 +202,40 @@ def execute_trade(
     if not api_key or not api_secret:
         raise ValueError("api_key and api_secret are required to execute trades")
     if quantity <= 0:
+        log.warning(f"[EXECUTE] {symbol} {side} x{quantity} -- invalid quantity, skipping")
         return None
 
-    orders = {}
-    if strategy == "LIMIT":
-        orders["main"] = submit_limit_order(symbol, quantity, side, price, api_key, api_secret)
-    elif strategy == "STOP":
-        orders["main"] = submit_stop_order(symbol, quantity, side, price, api_key, api_secret)
-    else:
-        orders["main"] = submit_market_order(symbol, quantity, side, api_key, api_secret)
+    try:
+        orders = {}
+        if strategy == "LIMIT":
+            orders["main"] = submit_limit_order(symbol, quantity, side, price, api_key, api_secret)
+        elif strategy == "STOP":
+            orders["main"] = submit_stop_order(symbol, quantity, side, price, api_key, api_secret)
+        else:
+            orders["main"] = submit_market_order(symbol, quantity, side, api_key, api_secret)
 
-    if stop_loss and side.upper() == "BUY":
-        orders["stop_loss"] = submit_stop_order(symbol, quantity, "SELL", stop_loss, api_key, api_secret)
-    if take_profit and side.upper() == "BUY":
-        orders["take_profit"] = submit_limit_order(symbol, quantity, "SELL", take_profit, api_key, api_secret)
+        # Set stop-loss and take-profit based on position direction
+        if side.upper() == "BUY":
+            if stop_loss:
+                orders["stop_loss"] = submit_stop_order(symbol, quantity, "SELL", stop_loss, api_key, api_secret)
+            if take_profit:
+                orders["take_profit"] = submit_limit_order(symbol, quantity, "SELL", take_profit, api_key, api_secret)
+        elif side.upper() == "SELL":
+            # For SHORT positions: stop_loss triggers BUY (to cover), take_profit is BUY limit (to close)
+            if stop_loss:
+                orders["stop_loss"] = submit_stop_order(symbol, quantity, "BUY", stop_loss, api_key, api_secret)
+            if take_profit:
+                orders["take_profit"] = submit_limit_order(symbol, quantity, "BUY", take_profit, api_key, api_secret)
 
-    return orders
+        log.info(f"[EXECUTE] {symbol} {side} x{quantity} ({strategy}) completed with {len(orders)} order(s)")
+        return orders
+    except Exception as exc:
+        log.error(
+            f"[EXECUTE] {symbol} {side} x{quantity} ({strategy}) failed: {exc} | "
+            f"stop_loss={stop_loss}, take_profit={take_profit}",
+            exc_info=True
+        )
+        return None
 
 
 def reconcile_positions(user_id: str, api_key: str, api_secret: str) -> Dict:
@@ -207,21 +246,30 @@ def reconcile_positions(user_id: str, api_key: str, api_secret: str) -> Dict:
     """
     import database as db  # local import to avoid circular at module level
 
-    broker_positions = get_positions(api_key, api_secret)
-    broker_map = {p["symbol"]: int(p["qty"]) for p in broker_positions}
+    try:
+        broker_positions = get_positions(api_key, api_secret)
+        broker_map = {p["symbol"]: int(p["qty"]) for p in broker_positions}
 
-    db_positions = db.load_positions(user_id)
-    db_map = {p["symbol"]: p["quantity"] for p in db_positions}
+        db_positions = db.load_positions(user_id)
+        db_map = {p["symbol"]: p["quantity"] for p in db_positions}
 
-    all_symbols = set(broker_map) | set(db_map)
-    diffs = []
-    for sym in sorted(all_symbols):
-        bq = broker_map.get(sym, 0)
-        dq = db_map.get(sym, 0)
-        if bq != dq:
-            diffs.append({"symbol": sym, "broker_qty": bq, "db_qty": dq})
+        all_symbols = set(broker_map) | set(db_map)
+        diffs = []
+        for sym in sorted(all_symbols):
+            bq = broker_map.get(sym, 0)
+            dq = db_map.get(sym, 0)
+            if bq != dq:
+                diffs.append({"symbol": sym, "broker_qty": bq, "db_qty": dq})
 
-    return {"ok": len(diffs) == 0, "diffs": diffs}
+        result = {"ok": len(diffs) == 0, "diffs": diffs}
+        if result["ok"]:
+            log.info(f"[RECONCILE] {user_id} -- {len(broker_map)} positions in sync")
+        else:
+            log.warning(f"[RECONCILE] {user_id} -- {len(diffs)} position(s) out of sync: {diffs}")
+        return result
+    except Exception as exc:
+        log.error(f"[RECONCILE] {user_id} failed: {exc}", exc_info=True)
+        return {"ok": False, "diffs": [], "error": str(exc)}
 
 
 if __name__ == "__main__":

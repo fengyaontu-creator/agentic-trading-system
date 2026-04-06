@@ -7,6 +7,7 @@ Uses real market data from yfinance with quantitative confidence boost.
 
 import json
 import os
+import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -21,6 +22,8 @@ from data_tools import fetch_market_data
 from position import compute_fill
 from sentiment_tools import get_market_sentiment
 import database as db
+
+log = logging.getLogger(__name__)
 
 
 class TradingParams(BaseModel):
@@ -155,6 +158,7 @@ Market Data:
                 analysis = parse_json_response(response.content)
             except Exception as exc:
                 # LLM parse failed -- use quantitative fallback
+                log.warning(f"[TECH] {symbol} LLM parsing failed: {exc}, using fallback analysis", exc_info=True)
                 analysis = self._fallback_analysis(market_data)
             else:
                 ml_signal = market_data.get("ml_signal", {})
@@ -201,10 +205,28 @@ class RiskManagementAgent:
         symbol: str = "",
     ) -> Dict:
         p = self.params
-        stop_loss = calculate_dynamic_stop_loss(
-            current_price, volatility, multiplier=p.stop_loss_multiplier,
-        )
-        take_profit = round(current_price * (1 + p.take_profit_pct), 2)
+        
+        # Determine action and calculate stop-loss/take-profit based on direction
+        action = signal.get("signal", "HOLD")
+        confidence = signal.get("confidence", 0.0)
+        
+        if action == "BUY":
+            # Long position: stop-loss below entry, take-profit above entry
+            stop_distance = calculate_dynamic_stop_loss(
+                current_price, volatility, multiplier=p.stop_loss_multiplier,
+            )
+            stop_loss = stop_distance  # Already below current_price
+            take_profit = round(current_price * (1 + p.take_profit_pct), 2)
+        elif action == "SELL":
+            # Short position: stop-loss above entry, take-profit below entry
+            stop_distance = current_price * volatility * p.stop_loss_multiplier
+            stop_loss = round(current_price + stop_distance, 2)  # Above current_price
+            take_profit = round(current_price * (1 - p.take_profit_pct), 2)
+        else:
+            # HOLD
+            stop_loss = current_price
+            take_profit = current_price
+        
         risk_level = "LOW" if volatility < 0.015 else "MEDIUM" if volatility < 0.03 else "HIGH"
 
         if signal.get("signal") == "HOLD":
@@ -217,8 +239,6 @@ class RiskManagementAgent:
                 "should_trade": False,
             }
 
-        action = signal.get("signal", "HOLD")
-        confidence = signal.get("confidence", 0.0)
         existing = portfolio_state.positions.get(symbol)
 
         if action == "SELL" and existing and existing.quantity > 0:
@@ -233,7 +253,12 @@ class RiskManagementAgent:
 
         # New BUY or new SHORT -- VaR-based sizing with concentration check
         max_risk_dollar = portfolio_state.portfolio_value * p.risk_per_trade
-        risk_per_share = current_price - stop_loss
+        # For both BUY and SHORT, risk_per_share is always positive
+        if action == "BUY":
+            risk_per_share = current_price - stop_loss
+        else:  # SELL (opening short)
+            risk_per_share = stop_loss - current_price
+        
         max_shares = int(max_risk_dollar / risk_per_share) if risk_per_share > 0 else 0
         position_size = int(max_shares * confidence)
 
@@ -250,7 +275,7 @@ class RiskManagementAgent:
         should_trade = (
             concentration["allowed"]
             and position_size > 0
-            and (action == "SELL" or proposed_value <= portfolio_state.cash)
+            and (action == "BUY" and proposed_value <= portfolio_state.cash or action == "SELL")
             and confidence >= p.min_confidence
             and risk_level != "HIGH"
         )
@@ -306,25 +331,37 @@ class ExecutionAgent:
         take_profit: float = None,
     ) -> Optional[Dict]:
         if quantity <= 0:
+            log.warning(f"[EXEC] {symbol} {side} x{quantity} -- invalid quantity")
             return None
 
-        result = alpaca_execute_trade(
-            symbol=symbol,
-            side=side,
-            quantity=quantity,
-            price=price,
-            api_key=api_key,
-            api_secret=api_secret,
-            strategy=strategy,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-        )
-        if result and result.get("main"):
-            order = result["main"]
-            order["timestamp"] = datetime.now().isoformat()
-            self.order_history.append(order)
-            return order
-        return None
+        try:
+            result = alpaca_execute_trade(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                price=price,
+                api_key=api_key,
+                api_secret=api_secret,
+                strategy=strategy,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+            )
+            if result and result.get("main"):
+                order = result["main"]
+                order["timestamp"] = datetime.now().isoformat()
+                self.order_history.append(order)
+                log.info(f"[EXEC] {symbol} {side} x{quantity} @ {price} ({strategy}) -> order_id={order.get('order_id')}")
+                return order
+            else:
+                log.warning(f"[EXEC] {symbol} {side} x{quantity} -- no main order returned")
+                return None
+        except Exception as exc:
+            log.error(
+                f"[EXEC] {symbol} {side} x{quantity} @ {price} ({strategy}) failed: {exc} | "
+                f"stop_loss={stop_loss}, take_profit={take_profit}",
+                exc_info=True
+            )
+            return None
 
 
 class TradingOrchestrator:
@@ -383,8 +420,8 @@ class TradingOrchestrator:
                 if price > 0:
                     position.current_price = price
                     position.pnl = round((price - position.entry_price) * position.quantity, 2)
-            except Exception:
-                pass  # keep last known price if fetch fails
+            except Exception as exc:
+                log.warning(f"[PORTFOLIO] {symbol} price update failed: {exc}, keeping last known price")  # keep last known price if fetch fails
 
         positions_value = sum(
             pos.quantity * pos.current_price
