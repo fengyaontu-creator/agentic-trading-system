@@ -7,8 +7,10 @@ Run:      uvicorn src.api:app --reload --port 8000
 """
 
 import os
+import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -81,7 +83,12 @@ class TradingParamsReq(BaseModel):
     stop_loss_multiplier: float = 2.0
     take_profit_pct: float = 0.05
     min_confidence: float = 0.3
-    strategy: str = "intraday"
+    trailing_stop_high_profit: float = 0.10
+    trailing_stop_low_profit: float = 0.05
+    trailing_stop_cushion: float = 0.03
+    trailing_stop_lock_pct: float = 0.02
+    strategy: Literal["intraday", "swing"] = "intraday"
+    risk_preference: Literal["conservative", "moderate", "aggressive"] = "moderate"
 
 
 # --Auth -----------------------------------------------------------------------
@@ -94,7 +101,25 @@ def register(req: AuthReq):
     if db.get_user_by_username(username):
         raise HTTPException(400, "Username already taken")
     user_id = username.lower().replace(" ", "_")
-    db.create_user(user_id, username, req.password)
+    # Distinct usernames can normalize to the same user_id (e.g. "Alice" / "alice",
+    # "a b" / "a_b"). Without this check, create_user's INSERT OR IGNORE would
+    # silently swallow the conflict and the second registrant would receive a
+    # valid token bound to the first user's account.
+    if db.get_user(user_id):
+        raise HTTPException(
+            400,
+            "Username conflicts with an existing account "
+            "(case/whitespace-insensitive). Please choose a different name.",
+        )
+    try:
+        db.create_user(user_id, username, req.password)
+    except sqlite3.IntegrityError:
+        # Pre-checks above are TOCTOU-vulnerable: a concurrent request can
+        # insert the same user_id/username between our get_user call and the
+        # INSERT here. create_user is now strict (no INSERT OR IGNORE on the
+        # users table), so the race shows up as IntegrityError and we surface
+        # it as 400 instead of silently minting a token for the wrong account.
+        raise HTTPException(400, "Username already taken")
     return {"token": _make_token(user_id, username), "user_id": user_id, "username": username}
 
 

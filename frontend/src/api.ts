@@ -36,11 +36,11 @@ export const api = {
   settings: () => req<SettingsData>("GET", "/api/settings"),
   updateWatchlist: (symbols: string[]) =>
     req("PUT", "/api/settings/watchlist", { symbols }),
+  updateTradingParams: (params: TradingParams) =>
+    req<{ status: string; params: TradingParams }>("PUT", "/api/settings/trading", params),
   updateAlpaca: (api_key: string, api_secret: string) =>
     req("PUT", "/api/settings/alpaca", { api_key, api_secret }),
   deleteAlpaca: () => req("DELETE", "/api/settings/alpaca"),
-  updateTradingParams: (params: TradingParams) =>
-    req("PUT", "/api/settings/trading", params),
 };
 
 // -- Types --------------------------------------------------------------------
@@ -77,6 +77,23 @@ export interface Signal {
   date: string;
 }
 
+export interface TradingParams {
+  risk_per_trade: number;
+  max_concentration: number;
+  stop_loss_multiplier: number;
+  take_profit_pct: number;
+  min_confidence: number;
+  trailing_stop_high_profit: number;
+  trailing_stop_low_profit: number;
+  trailing_stop_cushion: number;
+  trailing_stop_lock_pct: number;
+  strategy: string;
+  risk_preference: string;
+  last_param_update_at: string | null;
+  last_param_update_status: string | null;
+  last_param_update_reason: string | null;
+}
+
 export interface DashboardData {
   portfolio: Portfolio | null;
   positions: Position[];
@@ -86,15 +103,6 @@ export interface DashboardData {
 export interface SignalsData {
   today: Signal[];
   history: Signal[];
-}
-
-export interface TradingParams {
-  risk_per_trade: number;
-  max_concentration: number;
-  stop_loss_multiplier: number;
-  take_profit_pct: number;
-  min_confidence: number;
-  strategy: string;
 }
 
 export interface SettingsData {

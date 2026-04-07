@@ -10,6 +10,7 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 
+import scheduler
 from services import trading_sessions
 
 
@@ -81,3 +82,34 @@ def test_trade_skips_market_closed(mock_db, mock_mkt):
     result = trading_sessions.trade_for_user({"user_id": "u1"}, "fake-key")
     assert result["trades"] == 0
     mock_db.get_alpaca_credentials.assert_not_called()
+
+
+@patch("scheduler.log")
+@patch("scheduler._SESSION_FN", {"trade": MagicMock(return_value={"status": "ok"})})
+@patch("scheduler.db")
+@patch("scheduler.os.getenv", return_value=None)
+def test_scheduler_trade_does_not_require_openrouter(mock_getenv, mock_db, mock_log):
+    mock_db.list_users.return_value = [{"user_id": "u1"}]
+    scheduler.run_all_users("trade", max_workers=1)
+    mock_db.init_db.assert_called_once()
+    mock_log.error.assert_not_called()
+
+
+@patch("scheduler.optimize_all_users")
+@patch("scheduler._SESSION_FN", {"analyze": MagicMock(return_value={"status": "ok"})})
+@patch("scheduler.db")
+@patch("scheduler.os.getenv", return_value="openrouter-key")
+def test_scheduler_runs_optimizer_for_analyze(mock_getenv, mock_db, mock_opt):
+    mock_db.list_users.return_value = [{"user_id": "u1"}]
+    scheduler.run_all_users("analyze", max_workers=1)
+    mock_opt.assert_called_once_with("openrouter-key")
+
+
+@patch("scheduler.log")
+@patch("scheduler._SESSION_FN", {"trade": MagicMock(side_effect=RuntimeError("boom"))})
+@patch("scheduler.db")
+@patch("scheduler.os.getenv", return_value=None)
+def test_scheduler_collects_worker_errors(mock_getenv, mock_db, mock_log):
+    mock_db.list_users.return_value = [{"user_id": "u1"}]
+    scheduler.run_all_users("trade", max_workers=1)
+    assert any("failed: boom" in str(call.args[0]) for call in mock_log.error.call_args_list)

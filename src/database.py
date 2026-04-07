@@ -45,6 +45,11 @@ def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # SQLite ships with FK enforcement OFF by default and the PRAGMA is
+    # per-connection, so the FOREIGN KEY clauses in init_db() are decorative
+    # unless we set this on every connection. Must run outside a transaction;
+    # doing it right after connect() is the canonical place.
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -110,7 +115,15 @@ def init_db():
                 stop_loss_multiplier REAL NOT NULL DEFAULT 2.0,
                 take_profit_pct      REAL NOT NULL DEFAULT 0.05,
                 min_confidence       REAL NOT NULL DEFAULT 0.3,
+                trailing_stop_high_profit REAL NOT NULL DEFAULT 0.10,
+                trailing_stop_low_profit  REAL NOT NULL DEFAULT 0.05,
+                trailing_stop_cushion     REAL NOT NULL DEFAULT 0.03,
+                trailing_stop_lock_pct    REAL NOT NULL DEFAULT 0.02,
                 strategy             TEXT NOT NULL DEFAULT 'intraday',
+                risk_preference      TEXT NOT NULL DEFAULT 'moderate',
+                last_param_update_at     TEXT,
+                last_param_update_status TEXT,
+                last_param_update_reason TEXT,
                 updated_at           TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
@@ -131,6 +144,41 @@ def init_db():
                 UNIQUE(user_id, symbol, date)
             );
         """)
+
+    # Migrations for existing databases
+    with get_conn() as conn:
+        try:
+            conn.execute("ALTER TABLE user_settings ADD COLUMN risk_preference TEXT NOT NULL DEFAULT 'moderate'")
+        except Exception:
+            pass  # Column already exists
+        try:
+            conn.execute("ALTER TABLE user_settings ADD COLUMN trailing_stop_high_profit REAL NOT NULL DEFAULT 0.10")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE user_settings ADD COLUMN trailing_stop_low_profit REAL NOT NULL DEFAULT 0.05")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE user_settings ADD COLUMN trailing_stop_cushion REAL NOT NULL DEFAULT 0.03")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE user_settings ADD COLUMN trailing_stop_lock_pct REAL NOT NULL DEFAULT 0.02")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE user_settings ADD COLUMN last_param_update_at TEXT")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE user_settings ADD COLUMN last_param_update_status TEXT")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE user_settings ADD COLUMN last_param_update_reason TEXT")
+        except Exception:
+            pass
 
 
 # =============================================================================
@@ -153,9 +201,22 @@ def _verify_password(password: str, stored: str) -> bool:
 
 
 def create_user(user_id: str, username: str, password: str = "") -> Dict:
+    """Create a new user with default portfolio + settings rows.
+
+    Raises sqlite3.IntegrityError if user_id or username already exists.
+    Callers (api.py register, app.py register) MUST catch this -- the previous
+    INSERT OR IGNORE behavior silently swallowed PK conflicts and let the API
+    mint a JWT bound to the existing account, which is an authn bypass.
+
+    The portfolio_state and user_settings inserts stay as INSERT OR IGNORE so
+    that the function is still safe to re-run during partial-state recovery,
+    but the users insert is now strict. All three inserts run in one
+    transaction, so if the users insert raises, the dependent rows roll back
+    automatically.
+    """
     with get_conn() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO users (user_id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO users (user_id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
             (user_id, username, _hash_password(password), datetime.utcnow().isoformat()),
         )
         # Init portfolio with $100k if not exists
@@ -169,8 +230,10 @@ def create_user(user_id: str, username: str, password: str = "") -> Dict:
         conn.execute(
             """INSERT OR IGNORE INTO user_settings
                (user_id, risk_per_trade, max_concentration, stop_loss_multiplier,
-                take_profit_pct, min_confidence, strategy, updated_at)
-               VALUES (?, 0.02, 0.10, 2.0, 0.05, 0.3, 'intraday', ?)""",
+                take_profit_pct, min_confidence, trailing_stop_high_profit,
+                trailing_stop_low_profit, trailing_stop_cushion, trailing_stop_lock_pct,
+                strategy, risk_preference, updated_at)
+               VALUES (?, 0.02, 0.10, 2.0, 0.05, 0.3, 0.10, 0.05, 0.03, 0.02, 'intraday', 'moderate', ?)""",
             (user_id, datetime.utcnow().isoformat()),
         )
     return get_user(user_id)
@@ -219,6 +282,13 @@ def list_users() -> List[Dict]:
 def save_alpaca_credentials(user_id: str, api_key: str, api_secret: str):
     """Encrypt and store the user's Alpaca credentials."""
     with get_conn() as conn:
+        if not api_key.strip() and not api_secret.strip():
+            conn.execute(
+                """UPDATE users SET alpaca_key_enc = NULL, alpaca_secret_enc = NULL
+                   WHERE user_id = ?""",
+                (user_id,),
+            )
+            return
         conn.execute(
             """UPDATE users SET alpaca_key_enc = ?, alpaca_secret_enc = ?
                WHERE user_id = ?""",
@@ -235,9 +305,13 @@ def get_alpaca_credentials(user_id: str) -> Optional[Dict]:
         ).fetchone()
     if not row or not row["alpaca_key_enc"]:
         return None
+    api_key = decrypt(row["alpaca_key_enc"])
+    api_secret = decrypt(row["alpaca_secret_enc"])
+    if not api_key.strip() or not api_secret.strip():
+        return None
     return {
-        "api_key": decrypt(row["alpaca_key_enc"]),
-        "api_secret": decrypt(row["alpaca_secret_enc"]),
+        "api_key": api_key,
+        "api_secret": api_secret,
     }
 
 
@@ -247,10 +321,22 @@ _SETTINGS_DEFAULTS = {
     "stop_loss_multiplier": 2.0,
     "take_profit_pct": 0.05,
     "min_confidence": 0.3,
+    "trailing_stop_high_profit": 0.10,
+    "trailing_stop_low_profit": 0.05,
+    "trailing_stop_cushion": 0.03,
+    "trailing_stop_lock_pct": 0.02,
     "strategy": "intraday",
+    "risk_preference": "moderate",
 }
 
 _SETTINGS_COLS = list(_SETTINGS_DEFAULTS.keys())
+
+# Metadata written only by param_optimizer — never overwritten by save_user_settings.
+_OPTIMIZATION_META_COLS = [
+    "last_param_update_at",
+    "last_param_update_status",
+    "last_param_update_reason",
+]
 
 
 def load_user_settings(user_id: str) -> Dict:
@@ -259,25 +345,82 @@ def load_user_settings(user_id: str) -> Dict:
             "SELECT * FROM user_settings WHERE user_id = ?", (user_id,)
         ).fetchone()
     if not row:
-        return dict(_SETTINGS_DEFAULTS)
-    return {col: row[col] for col in _SETTINGS_COLS}
+        out = dict(_SETTINGS_DEFAULTS)
+        out.update({col: None for col in _OPTIMIZATION_META_COLS})
+        return out
+    out = {col: row[col] for col in _SETTINGS_COLS}
+    for col in _OPTIMIZATION_META_COLS:
+        try:
+            out[col] = row[col]
+        except (IndexError, KeyError):
+            out[col] = None
+    return out
+
+
+def set_param_optimization_status(
+    user_id: str,
+    status: str,
+    reason: Optional[str] = None,
+):
+    """Record the outcome of the most recent AI parameter optimization run.
+
+    status: 'ok' | 'failed' | 'skipped'
+    reason: short human-readable string (None on success)
+    """
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE user_settings
+               SET last_param_update_at     = ?,
+                   last_param_update_status = ?,
+                   last_param_update_reason = ?
+               WHERE user_id = ?""",
+            (datetime.utcnow().isoformat(), status, reason, user_id),
+        )
 
 
 def save_user_settings(user_id: str, **kwargs):
-    values = {col: kwargs.get(col, _SETTINGS_DEFAULTS[col]) for col in _SETTINGS_COLS}
+    """Partial update of a user's trading settings.
+
+    Any column NOT supplied in kwargs is preserved at its current DB value
+    (or its default if no row exists yet). Previously this function silently
+    reset every unspecified column to its default, which is a foot-gun for
+    callers (e.g. legacy Streamlit UI passing only 5 of 11 fields would wipe
+    out a user's strategy='swing' setting back to 'intraday').
+
+    Unknown kwargs are rejected to catch typos at the call site rather than
+    silently dropping the value.
+    """
+    unknown = set(kwargs) - set(_SETTINGS_COLS)
+    if unknown:
+        raise ValueError(
+            f"save_user_settings: unknown field(s) {sorted(unknown)}; "
+            f"valid fields are {_SETTINGS_COLS}"
+        )
+    # load_user_settings returns defaults for missing settings rows. The user
+    # itself must still exist; with FK enforcement ON, an unknown user_id will
+    # fail at INSERT/UPDATE time instead of silently creating an orphan row.
+    existing = load_user_settings(user_id)
+    values = {col: kwargs.get(col, existing[col]) for col in _SETTINGS_COLS}
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO user_settings
                (user_id, risk_per_trade, max_concentration, stop_loss_multiplier,
-                take_profit_pct, min_confidence, strategy, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                take_profit_pct, min_confidence, trailing_stop_high_profit,
+                trailing_stop_low_profit, trailing_stop_cushion, trailing_stop_lock_pct,
+                strategy, risk_preference, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(user_id) DO UPDATE SET
                    risk_per_trade       = excluded.risk_per_trade,
                    max_concentration    = excluded.max_concentration,
                    stop_loss_multiplier = excluded.stop_loss_multiplier,
                    take_profit_pct      = excluded.take_profit_pct,
                    min_confidence       = excluded.min_confidence,
+                   trailing_stop_high_profit = excluded.trailing_stop_high_profit,
+                   trailing_stop_low_profit  = excluded.trailing_stop_low_profit,
+                   trailing_stop_cushion     = excluded.trailing_stop_cushion,
+                   trailing_stop_lock_pct    = excluded.trailing_stop_lock_pct,
                    strategy             = excluded.strategy,
+                   risk_preference      = excluded.risk_preference,
                    updated_at           = excluded.updated_at""",
             (user_id, *[values[c] for c in _SETTINGS_COLS], datetime.utcnow().isoformat()),
         )

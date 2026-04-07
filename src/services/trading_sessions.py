@@ -8,7 +8,6 @@ services/trading_sessions.py -- Business logic for each scheduler session.
 
 import json
 import logging
-import traceback
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -93,6 +92,7 @@ def trade_for_user(user: dict, api_key: str) -> dict:
 
     for sig in pending:
         symbol = sig["symbol"]
+        risk = None
         try:
             market_data = json.loads(fetch_market_data.invoke({"symbol": symbol}))
             current_price = float(market_data.get("current_price", 0.0))
@@ -142,9 +142,10 @@ def trade_for_user(user: dict, api_key: str) -> dict:
                 log.info(f"[TRADE] {user_id}/{symbol} -> {sig['signal']} x{quantity} @ {filled_price}")
 
         except Exception as exc:
+            quantity = int(risk.get("position_size", 0)) if risk else 0
             log.error(
                 f"[TRADE] {user_id}/{symbol} failed: {exc} | "
-                f"signal={sig.get('signal')}, quantity={int(risk.get('position_size', 0) if 'risk' in locals() else 0)}",
+                f"signal={sig.get('signal')}, quantity={quantity}",
                 exc_info=True
             )
 
@@ -165,9 +166,18 @@ def close_for_user(user: dict, api_key: str) -> dict:
         return {"user_id": user_id, "status": "ok", "trades": 0}
 
     settings = db.load_user_settings(user_id)
-    if settings.get("strategy", "intraday") != "intraday":
-        log.info(f"[CLOSE] {user_id} -- strategy is '{settings.get('strategy')}', skipping EOD flatten")
-        return {"user_id": user_id, "status": "ok", "trades": 0}
+    strategy = settings.get("strategy")
+    if strategy != "intraday":
+        log.warning(
+            f"[CLOSE] {user_id} -- strategy={strategy!r} is not 'intraday', "
+            f"skipping EOD flatten (set strategy='intraday' to enable)"
+        )
+        return {
+            "user_id": user_id,
+            "status": "skipped",
+            "reason": f"strategy={strategy!r} not 'intraday'",
+            "trades": 0,
+        }
 
     creds = db.get_alpaca_credentials(user_id)
     if not creds:

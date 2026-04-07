@@ -13,6 +13,7 @@ Pages:
 """
 
 import os
+import sqlite3
 import sys
 import json
 from datetime import datetime, timezone
@@ -30,7 +31,7 @@ import database as db
 # --Page config ---------------------------------------------------------------
 st.set_page_config(
     page_title="AI Trading System",
-    page_icon="📈",
+    page_icon=":chart_with_upwards_trend:",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -49,7 +50,7 @@ def logout():
 
 # --Auth page -----------------------------------------------------------------
 def page_auth():
-    st.title("📈 AI Trading System")
+    st.title("AI Trading System")
     st.markdown("LLM-powered automated trading with multi-user support.")
 
     tab_login, tab_register = st.tabs(["Login", "Register"])
@@ -87,13 +88,22 @@ def page_auth():
             else:
                 user_id = new_username.strip().lower().replace(" ", "_")
                 existing = db.get_user_by_username(new_username.strip())
-                if existing:
+                # Also reject distinct usernames that normalize to the same
+                # user_id (e.g. "Alice" / "alice"); see api.py register for the
+                # full rationale.
+                if existing or db.get_user(user_id):
                     st.error("Username already taken.")
                 else:
-                    db.create_user(user_id, new_username.strip(), new_password)
-                    st.session_state["user_id"] = user_id
-                    st.session_state["username"] = new_username.strip()
-                    st.rerun()
+                    try:
+                        db.create_user(user_id, new_username.strip(), new_password)
+                    except sqlite3.IntegrityError:
+                        # Race-safety net for the TOCTOU window between the
+                        # pre-check and the INSERT (see api.py register).
+                        st.error("Username already taken.")
+                    else:
+                        st.session_state["user_id"] = user_id
+                        st.session_state["username"] = new_username.strip()
+                        st.rerun()
 
 
 # --Sidebar -------------------------------------------------------------------
@@ -208,8 +218,8 @@ def page_signals():
 
     for sig in signals:
         signal = sig["signal"]
-        color = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}.get(signal, "⚪")
-        executed = "✅ Executed" if sig["executed"] else "⏳ Pending"
+        color = {"BUY": "BUY", "SELL": "SELL", "HOLD": "HOLD"}.get(signal, "INFO")
+        executed = "Executed" if sig["executed"] else "Pending"
 
         with st.expander(f"{color} **{sig['symbol']}** --{signal} ({sig['confidence']:.0%} confidence)  {executed}"):
             col1, col2 = st.columns(2)
@@ -360,7 +370,7 @@ def page_settings():
             st.error("Both fields are required.")
 
     st.markdown("---")
-    st.caption(f"User ID: `{user_id}` | Next analysis: 07:30 ET | Next trade: 09:30 ET")
+    st.caption(f"User ID: `{user_id}` | Next analysis: 07:30 ET | Next trade: 09:50 ET")
 
 
 # --Main ----------------------------------------------------------------------
@@ -385,3 +395,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
