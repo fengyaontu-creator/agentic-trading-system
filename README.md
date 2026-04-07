@@ -8,6 +8,7 @@ For the latest branch status, deployment notes, and teammate handoff summary, se
 
 - Supports multi-user registration and login
 - Lets each user manage their own watchlist, trading parameters, and Alpaca paper-trading credentials
+- Validates Alpaca credentials when they are saved in Settings, so unusable paper keys are rejected immediately
 - Runs scheduled sessions for:
   - `analyze`: optimize per-user parameters, then generate daily signals
   - `trade`: execute open trades from today's signals, with the default scheduled run at `09:50 ET`
@@ -86,6 +87,12 @@ These belong to each user account:
 - strategy mode (`intraday` or `swing`)
 
 User Alpaca credentials are encrypted with Fernet before being written to the database.
+
+The React Settings page now distinguishes between:
+
+- credentials not set
+- credentials saved and verified
+- credentials saved but invalid
 
 ## Environment Variables
 
@@ -198,6 +205,7 @@ Behavior:
 
 - `analyze`: run AI parameter optimization, then save today's signals for each user's watchlist
 - `trade`: execute today's pending non-`HOLD` signals during market hours
+  - protected entry trades use Alpaca advanced orders (`bracket` or `OTO`) when stop-loss / take-profit data is available
 - `close`: flatten positions only for users whose strategy is exactly `intraday`
 
 The market-hours logic is evaluated in `America/New_York`.

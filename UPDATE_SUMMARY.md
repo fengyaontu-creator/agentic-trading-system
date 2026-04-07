@@ -16,6 +16,79 @@ Add new entries to the top so the latest update appears first.
 
 ---
 
+## 2026-04-07 Alpaca Advanced Orders and Credential Validation
+
+**Author:** Nora + Codex
+
+**Branch:** `full-version`
+
+**Status:** Pushed to GitHub, deployed to server, and manually re-tested on 2026-04-07.
+
+**Context:** This round focused on fixing the Alpaca execution path after we confirmed that separately submitted market, stop-loss, and take-profit orders were triggering `potential wash trade detected` rejections. It also closed the UX gap where the Settings page showed Alpaca credentials as "set" even when Alpaca would later reject them as `unauthorized`.
+
+### What changed
+
+- Reworked Alpaca order submission in [src/broker_alpaca.py](e:/VScodeProjects/6115/agentic-trading-system-copy/src/broker_alpaca.py):
+  - new protected entries now use Alpaca advanced orders instead of submitting the exit legs separately
+  - `bracket` orders are used when both `stop_loss` and `take_profit` are available
+  - `OTO` orders are used when only one protective leg is available
+  - closing trades now skip protective legs instead of attaching exits to a flattening order
+
+- Updated execution routing in [src/agentic_trading.py](e:/VScodeProjects/6115/agentic-trading-system-copy/src/agentic_trading.py) and [src/services/trading_sessions.py](e:/VScodeProjects/6115/agentic-trading-system-copy/src/services/trading_sessions.py):
+  - opening trades and closing trades are now treated differently when deciding whether to attach protection
+  - the execution layer now preserves successful main-order results instead of discarding them because a follow-up protective submission failed
+
+- Added regression coverage in [tests/test_broker_alpaca.py](e:/VScodeProjects/6115/agentic-trading-system-copy/tests/test_broker_alpaca.py):
+  - bracket path for dual-protection entries
+  - OTO path for single-protection entries
+  - close-session / no-protection execution paths
+  - fallback handling when a main order genuinely fails
+
+- Added Alpaca credential validation at save time in [src/api.py](e:/VScodeProjects/6115/agentic-trading-system-copy/src/api.py):
+  - saving credentials now performs a live Alpaca account check before accepting them
+  - invalid credentials are rejected immediately instead of surfacing later during `trade` or `reconcile`
+  - `/api/settings` now returns an Alpaca status block with `saved`, `valid`, and `detail`
+
+- Updated Settings UI in [frontend/src/pages/SettingsPage.tsx](e:/VScodeProjects/6115/agentic-trading-system-copy/frontend/src/pages/SettingsPage.tsx) and [frontend/src/api.ts](e:/VScodeProjects/6115/agentic-trading-system-copy/frontend/src/api.ts):
+  - the page now distinguishes between `saved and verified`, `saved but invalid`, and `not set`
+  - the old green "Credentials are set" message no longer appears for bad keys
+
+### Verification
+
+- local backend regression suite passed:
+  - `tests/test_api_alpaca_validation.py`
+  - `tests/test_broker_alpaca.py`
+  - `tests/test_sessions_integration.py`
+  - `tests/test_scheduler.py`
+  - total: `20 passed`
+
+- local frontend production build completed successfully
+
+- server deployment completed successfully:
+  - pulled latest `full-version`
+  - restarted `agentic-trading.service`
+  - manually re-ran the `trade` session on the server
+
+- post-deploy trading verification:
+  - `nora` now shows `executed = 1` for `AAPL BUY`, `TSLA BUY`, and `WMT SELL`
+  - this confirms the advanced-order change resolved the main wash-trade failure mode for new protected entries
+
+### What teammates should know
+
+- the main Alpaca execution issue is now materially improved for valid user accounts
+- users with invalid Alpaca credentials will now see an immediate validation error in Settings instead of silently storing unusable keys
+- some older accounts still have historical broker / DB position drift from earlier failed runs; that is now a cleanup / reconciliation problem, not the same advanced-order bug
+- at least one user (`wdy`) still appears to have invalid Alpaca credentials and needs to re-save valid paper keys
+
+### Follow-up ideas
+
+- add an admin / diagnostics view to show which users currently have invalid Alpaca credentials
+- improve reconciliation tooling for legacy broker-vs-DB drift from pre-bracket runs
+- consider adding OCO support later for "add protection to an already-open position" scenarios
+
+
+---
+
 ## 2026-04-07 Dynamic Position Sizing and Local Data Backtest Update
 
 **Author:** DY
