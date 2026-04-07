@@ -16,6 +16,80 @@ Add new entries to the top so the latest update appears first.
 
 ---
 
+## 2026-04-07 Deployment Readiness and Reliability Cleanup
+
+**Author:** Nora + Codex review sync
+
+**Branch:** `full-version`
+
+**Status:** This entry reflects the current local workspace state before the next GitHub push.
+
+**Context:** This round focused on turning the multi-user paper-trading build into something safer to deploy on a server without losing the recent branch cleanup. The work centered on account isolation, scheduler safety, database integrity, and keeping the React settings flow aligned with the backend.
+
+### What changed
+
+- Tightened registration safety:
+  - registration now rejects collisions on both raw `username` and normalized `user_id`
+  - `create_user()` is strict on the `users` table and surfaces `sqlite3.IntegrityError` instead of silently ignoring conflicts
+  - this closes the old risk where different names like `Alice` / `alice` could collapse onto the same account
+
+- Removed hidden write side effects from `TradingOrchestrator` construction:
+  - the constructor is now read-only
+  - it no longer auto-creates users or initializes the DB behind the scenes
+  - unknown `user_id` values now fail loudly instead of creating ghost accounts
+
+- Hardened DB integrity:
+  - SQLite foreign key enforcement is now enabled on every connection
+  - credential removal now truly clears saved Alpaca secrets instead of storing encrypted empty strings
+  - zero-quantity fills now delete the corresponding DB position row so stale positions do not survive after flattening
+
+- Made settings updates safer and clearer:
+  - `save_user_settings()` is now a true partial update and rejects unknown fields
+  - React Settings now refreshes from the backend after saving or deleting values
+  - optimization metadata (`last_param_update_*`) is stored and displayed in the UI
+
+- Tightened close-session behavior:
+  - only users with exact `strategy == "intraday"` are flattened during the `close` session
+  - `swing`, `NULL`, typo'd, or legacy values are skipped with a warning instead of being flattened by mistake
+
+- Improved scheduler and parameter optimization flow:
+  - `analyze` now runs AI parameter optimization before saving signals
+  - optimization results are recorded as `ok`, `failed`, or `skipped`
+  - skipped / failed states are visible from the settings page
+  - the default scheduled `trade` time was moved from `09:30 ET` to `09:50 ET` to avoid the noisiest part of the market open
+
+- Cleaned test reliability issues:
+  - the portfolio tests no longer leak writes into the real `trading.db`
+  - integration coverage now exercises `analyze`, `trade`, and `close` behavior more directly
+  - credential deletion and strategy whitelist behavior now have explicit regression coverage
+
+### Current deployment posture
+
+This branch is in a much better state for:
+
+- monitored Alpaca paper trading
+- manual `analyze` / `trade` runs before enabling unattended scheduling
+- server deployment with persistent SQLite data
+
+It is still not a production-grade brokerage platform. The remaining work is mostly hardening, cleanup, and operational safety rather than missing core functionality.
+
+### What teammates should know
+
+- React + FastAPI is the primary app path; the Streamlit app remains as a legacy/local interface
+- per-user Alpaca credentials live in the database and are encrypted with `DB_ENCRYPTION_KEY`
+- server `git pull` should not overwrite SQLite data as long as `DB_PATH` points to the existing DB and no cleanup command deletes it
+- before updating a live server, back up `trading.db`, `trading.db-wal`, and `trading.db-shm`
+- code, UI copy, and scheduler examples now assume `analyze = 07:30 ET`, `trade = 09:50 ET`, `close = 15:30 ET`
+
+### Suggested next steps
+
+- add numeric validation bounds to trading parameter API inputs
+- replace separate stop-loss / take-profit follow-up orders with a safer bracket/OCO-style approach if Alpaca workflow permits
+- tighten DB migration error handling so real migration failures do not get silently swallowed
+
+
+---
+
 ## 2026-04-06 Short Selling Risk Management Fix
 
 **Branch:** `full-version`

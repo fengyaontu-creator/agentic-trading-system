@@ -2,15 +2,63 @@ import { CheckCircle, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, SettingsData, TradingParams } from "../api";
 
-type NumericParam = Exclude<keyof TradingParams, "strategy">;
+const AI_PARAM_LABELS: { key: keyof TradingParams; label: string; format: (v: number) => string }[] = [
+  { key: "risk_per_trade",       label: "Risk per Trade",             format: (v) => `${(v * 100).toFixed(1)}%` },
+  { key: "max_concentration",    label: "Max Concentration",          format: (v) => `${(v * 100).toFixed(0)}%` },
+  { key: "stop_loss_multiplier", label: "Stop-Loss Multiplier",       format: (v) => `${v.toFixed(1)}x` },
+  { key: "take_profit_pct",      label: "Take-Profit Target",         format: (v) => `${(v * 100).toFixed(1)}%` },
+  { key: "min_confidence",       label: "Min Confidence",             format: (v) => `${(v * 100).toFixed(0)}%` },
+  { key: "trailing_stop_high_profit", label: "Aggressive Trail Trigger", format: (v) => `${(v * 100).toFixed(0)}%` },
+  { key: "trailing_stop_low_profit",  label: "Moderate Trail Trigger",   format: (v) => `${(v * 100).toFixed(0)}%` },
+  { key: "trailing_stop_cushion",     label: "Trail Cushion",            format: (v) => `${(v * 100).toFixed(1)}%` },
+  { key: "trailing_stop_lock_pct",    label: "Trail Lock-in",            format: (v) => `${(v * 100).toFixed(1)}%` },
+];
 
-const PARAM_LABELS: Record<NumericParam, { label: string; step: string; min: string; max: string }> = {
-  risk_per_trade:       { label: "Risk per Trade (%)",    step: "0.005", min: "0.005", max: "0.2" },
-  max_concentration:    { label: "Max Concentration (%)", step: "0.01",  min: "0.01",  max: "0.5" },
-  stop_loss_multiplier: { label: "Stop-Loss Multiplier",  step: "0.1",   min: "0.5",   max: "5" },
-  take_profit_pct:      { label: "Take-Profit (%)",       step: "0.01",  min: "0.01",  max: "0.5" },
-  min_confidence:       { label: "Min Confidence",        step: "0.05",  min: "0",      max: "1" },
-};
+function OptimizationStatus({ params }: { params: TradingParams }) {
+  const status = params.last_param_update_status;
+  const at = params.last_param_update_at;
+  const reason = params.last_param_update_reason;
+
+  if (!status || !at) {
+    return (
+      <p className="mb-3 text-xs text-gray-500">
+        Not yet optimized - values will refresh on the next analyze session.
+      </p>
+    );
+  }
+
+  const when = new Date(at).toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+  });
+
+  if (status === "ok") {
+    return (
+      <p className="mb-3 text-xs text-green-500">
+        Last updated: {when}
+      </p>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <p className="mb-3 text-xs text-red-400">
+        Last optimization failed ({when}){reason ? `: ${reason}` : ""}
+      </p>
+    );
+  }
+  if (status === "skipped") {
+    return (
+      <p className="mb-3 text-xs text-yellow-500">
+        Last run skipped ({when}){reason ? `: ${reason}` : ""}
+      </p>
+    );
+  }
+  return (
+    <p className="mb-3 text-xs text-gray-500">
+      Status: {status} ({when})
+    </p>
+  );
+}
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
@@ -32,13 +80,16 @@ export default function SettingsPage() {
   const [paramsMsg, setParamsMsg] = useState("");
   const [paramsErr, setParamsErr] = useState("");
 
+  async function refreshSettings() {
+    const fresh = await api.settings();
+    setSettings(fresh);
+    setSymbolsStr(fresh.symbols.join(", "));
+    setTradingParams(fresh.trading_params);
+    return fresh;
+  }
+
   useEffect(() => {
-    api.settings()
-      .then((s) => {
-        setSettings(s);
-        setSymbolsStr(s.symbols.join(", "));
-        setTradingParams(s.trading_params);
-      })
+    refreshSettings()
       .catch((e) => console.error(e))
       .finally(() => setLoading(false));
   }, []);
@@ -50,7 +101,8 @@ export default function SettingsPage() {
     if (!symbols.length) return setWatchlistErr("Enter at least one symbol.");
     try {
       await api.updateWatchlist(symbols);
-      setWatchlistMsg(`Saved: ${symbols.join(", ")}`);
+      const fresh = await refreshSettings();
+      setWatchlistMsg(`Saved: ${fresh.symbols.join(", ")}`);
     } catch (err: unknown) {
       setWatchlistErr(err instanceof Error ? err.message : "Failed");
     }
@@ -61,8 +113,8 @@ export default function SettingsPage() {
     setAlpacaMsg(""); setAlpacaErr("");
     try {
       await api.updateAlpaca(alpacaKey, alpacaSecret);
+      await refreshSettings();
       setAlpacaMsg("Credentials saved and encrypted.");
-      setSettings((s) => s ? { ...s, has_alpaca: true } : s);
       setAlpacaKey(""); setAlpacaSecret("");
     } catch (err: unknown) {
       setAlpacaErr(err instanceof Error ? err.message : "Failed");
@@ -75,6 +127,7 @@ export default function SettingsPage() {
     if (!tradingParams) return;
     try {
       await api.updateTradingParams(tradingParams);
+      await refreshSettings();
       setParamsMsg("Trading parameters saved.");
     } catch (err: unknown) {
       setParamsErr(err instanceof Error ? err.message : "Failed");
@@ -84,7 +137,7 @@ export default function SettingsPage() {
   async function removeAlpaca() {
     try {
       await api.deleteAlpaca();
-      setSettings((s) => s ? { ...s, has_alpaca: false } : s);
+      await refreshSettings();
       setAlpacaMsg("Credentials removed.");
     } catch (err: unknown) {
       setAlpacaErr(err instanceof Error ? err.message : "Failed");
@@ -124,30 +177,23 @@ export default function SettingsPage() {
         </form>
       </div>
 
-      {/* Trading Parameters */}
+      {/* Trading Preferences */}
       {tradingParams && (
         <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
-          <h2 className="mb-4 text-sm font-semibold text-gray-300">Trading Parameters</h2>
+          <h2 className="mb-4 text-sm font-semibold text-gray-300">Trading Preferences</h2>
           <form onSubmit={saveTradingParams} className="space-y-3">
-            {(Object.keys(PARAM_LABELS) as NumericParam[]).map((key) => {
-              const cfg = PARAM_LABELS[key];
-              return (
-                <div key={key}>
-                  <label className="mb-1.5 block text-xs text-gray-500">{cfg.label}</label>
-                  <input
-                    type="number"
-                    step={cfg.step}
-                    min={cfg.min}
-                    max={cfg.max}
-                    value={tradingParams[key]}
-                    onChange={(e) =>
-                      setTradingParams({ ...tradingParams, [key]: parseFloat(e.target.value) || 0 })
-                    }
-                    className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2.5 text-sm text-gray-100 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-                  />
-                </div>
-              );
-            })}
+            <div>
+              <label className="mb-1.5 block text-xs text-gray-500">Risk Preference</label>
+              <select
+                value={tradingParams.risk_preference}
+                onChange={(e) => setTradingParams({ ...tradingParams, risk_preference: e.target.value })}
+                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2.5 text-sm text-gray-100 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+              >
+                <option value="conservative">Conservative - Minimize drawdowns</option>
+                <option value="moderate">Moderate - Balanced risk/reward</option>
+                <option value="aggressive">Aggressive - Maximize gains</option>
+              </select>
+            </div>
             <div>
               <label className="mb-1.5 block text-xs text-gray-500">Strategy</label>
               <select
@@ -165,9 +211,30 @@ export default function SettingsPage() {
               type="submit"
               className="w-full rounded-lg bg-indigo-600 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors"
             >
-              Save Parameters
+              Save Preferences
             </button>
           </form>
+
+          {/* AI-optimized parameters (read-only) */}
+          <div className="mt-4 border-t border-gray-800 pt-4">
+            <h3 className="mb-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              AI-Optimized Parameters
+            </h3>
+            <p className="mb-2 text-xs text-gray-600">
+              These values are automatically tuned by AI based on your risk preference, market conditions, and trade history. Refreshed before each analyze session.
+            </p>
+            <OptimizationStatus params={tradingParams} />
+            <div className="grid grid-cols-2 gap-2">
+              {AI_PARAM_LABELS.map(({ key, label, format }) => (
+                <div key={key} className="rounded-lg bg-gray-800/50 px-3 py-2">
+                  <span className="block text-xs text-gray-500">{label}</span>
+                  <span className="text-sm font-mono text-gray-300">
+                    {format(tradingParams[key] as number)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -228,7 +295,7 @@ export default function SettingsPage() {
       </div>
 
       <p className="text-xs text-gray-600">
-        Analyze: 07:30 ET &nbsp;|&nbsp; Trade: 09:30 ET &nbsp;|&nbsp; Close: 15:30 ET
+        Analyze: 07:30 ET &nbsp;|&nbsp; Trade: 09:50 ET &nbsp;|&nbsp; Close: 15:30 ET
       </p>
     </div>
   );

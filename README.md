@@ -9,9 +9,9 @@ For the latest branch status, deployment notes, and teammate handoff summary, se
 - Supports multi-user registration and login
 - Lets each user manage their own watchlist, trading parameters, and Alpaca paper-trading credentials
 - Runs scheduled sessions for:
-  - `analyze`: generate daily signals
-  - `trade`: execute open trades from today's signals
-  - `close`: flatten end-of-day positions for `intraday` users
+  - `analyze`: optimize per-user parameters, then generate daily signals
+  - `trade`: execute open trades from today's signals, with the default scheduled run at `09:50 ET`
+  - `close`: flatten end-of-day positions only for users whose strategy is exactly `intraday`
 - Stores portfolio state, positions, trades, signals, and encrypted user credentials in SQLite
 - Provides a React dashboard for monitoring portfolio, signals, history, and settings
 
@@ -46,6 +46,7 @@ src/
   scheduler.py             Cron / scheduled entrypoint
   services/
     trading_sessions.py    Analyze / trade / close session logic
+  param_optimizer.py       Pre-analyze AI parameter optimization
   agentic_trading.py       Main orchestrator
   position.py              Shared position / fill arithmetic
   broker_alpaca.py         Alpaca paper-trading adapter
@@ -53,6 +54,7 @@ src/
   data_tools.py            Market data and indicators
   sentiment_tools.py       News + sentiment analysis
   backtester.py            Metrics and portfolio history
+  app.py                   Optional legacy Streamlit UI
 tests/                     Regression tests for core logic
 docs/                      Setup notes and data dictionary
 ```
@@ -186,13 +188,21 @@ python src/scheduler.py --session trade
 python src/scheduler.py --session close
 ```
 
+Default schedule in ET:
+
+- `analyze`: `07:30 ET`
+- `trade`: `09:50 ET`
+- `close`: `15:30 ET`
+
 Behavior:
 
-- `analyze`: save today's signals for each user's watchlist
+- `analyze`: run AI parameter optimization, then save today's signals for each user's watchlist
 - `trade`: execute today's pending non-`HOLD` signals during market hours
-- `close`: flatten positions only for users whose strategy is `intraday`
+- `close`: flatten positions only for users whose strategy is exactly `intraday`
 
 The market-hours logic is evaluated in `America/New_York`.
+
+The scheduler writes operational logs to `scheduler.log`.
 
 ## Trading Modes
 
@@ -210,7 +220,7 @@ Core regression tests live in `tests/`.
 Run tests with:
 
 ```powershell
-pytest
+python -m pytest
 ```
 
 Current coverage focuses on:
@@ -218,6 +228,7 @@ Current coverage focuses on:
 - shared position update rules
 - scheduler behavior
 - portfolio update logic
+- session integration and credential handling
 
 ## Production Build
 
@@ -254,6 +265,8 @@ Important reminders:
 
 - use user-specific Alpaca credentials for multi-user trading
 - keep `JWT_SECRET` and `DB_ENCRYPTION_KEY` private and stable
+- back up `trading.db`, `trading.db-wal`, and `trading.db-shm` before updating a live server
+- keep `DB_PATH` stable on the server so code updates do not point the app at a fresh empty database
 - SQLite is acceptable for demos, but PostgreSQL would be better for longer-term multi-user use
 - start with Alpaca paper trading, not live capital
 

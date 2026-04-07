@@ -14,29 +14,52 @@ from unittest.mock import patch, MagicMock
 from agentic_trading import TradingOrchestrator, PortfolioState, Position
 
 
+# Must match the rate used in agentic_trading.apply_fill (src/agentic_trading.py:487).
+FRICTION_RATE = 0.0005
+
+
+def _friction(qty: int, price: float) -> float:
+    return qty * price * FRICTION_RATE
+
+
 # ---------------------------------------------------------------------------
-# Helper — build a minimal orchestrator without DB / LLM
+# Auto-cleanup any patches started inside _make_orchestrator. Without this the
+# patches inside `with patch(...)` would expire the moment the helper returned,
+# letting subsequent apply_fill() calls hit the real trading.db file -- which
+# silently inserted orphan rows until FK enforcement turned that into a hard
+# IntegrityError.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _stop_all_patches():
+    yield
+    patch.stopall()
+
+
+# ---------------------------------------------------------------------------
+# Helper -- build a minimal orchestrator without DB / LLM
 # ---------------------------------------------------------------------------
 
 def _make_orchestrator(cash=100_000.0, positions=None):
-    with patch("agentic_trading.db") as mock_db, \
-         patch("agentic_trading.ChatOpenAI"):
-        mock_db.load_user_settings.return_value = {}
-        mock_db.get_alpaca_credentials.return_value = None
-        mock_db.load_portfolio.return_value = {
-            "cash": cash, "portfolio_value": cash, "total_trades": 0,
-        }
-        mock_db.load_positions.return_value = []
-        mock_db.get_user.return_value = {"user_id": "test", "username": "test"}
-        mock_db.create_user.return_value = None
-        mock_db.record_trade.return_value = None
-        orch = TradingOrchestrator(api_key=None, user_id="test", initial_capital=cash)
+    mock_db = patch("agentic_trading.db").start()
+    patch("agentic_trading.ChatOpenAI").start()
+
+    mock_db.load_user_settings.return_value = {}
+    mock_db.get_alpaca_credentials.return_value = None
+    mock_db.load_portfolio.return_value = {
+        "cash": cash, "portfolio_value": cash, "total_trades": 0,
+    }
+    mock_db.load_positions.return_value = []
+    mock_db.get_user.return_value = {"user_id": "test", "username": "test"}
+    mock_db.record_trade.return_value = None
+    mock_db.save_position.return_value = None
+
+    orch = TradingOrchestrator(api_key=None, user_id="test", initial_capital=cash)
 
     # Inject positions if provided
     if positions:
         for pos in positions:
             orch.portfolio_state.positions[pos.symbol] = pos
-    # Stub record_trade so apply_fill doesn't hit real DB
     orch._mock_db = mock_db
     return orch
 
@@ -53,7 +76,9 @@ class TestNewPosition:
         pos = orch.portfolio_state.positions["AAPL"]
         assert pos.quantity == 10
         assert pos.entry_price == 150.0
-        assert orch.portfolio_state.cash == 100_000 - 10 * 150
+        assert orch.portfolio_state.cash == pytest.approx(
+            100_000 - 10 * 150 - _friction(10, 150.0)
+        )
 
     def test_sell_creates_short(self):
         orch = _make_orchestrator()
@@ -62,7 +87,9 @@ class TestNewPosition:
         pos = orch.portfolio_state.positions["AAPL"]
         assert pos.quantity == -5
         assert pos.entry_price == 200.0
-        assert orch.portfolio_state.cash == 100_000 + 5 * 200
+        assert orch.portfolio_state.cash == pytest.approx(
+            100_000 + 5 * 200 - _friction(5, 200.0)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +138,9 @@ class TestPartialReduce:
         assert pos.quantity == 12
         # entry price unchanged on partial reduce
         assert pos.entry_price == 100.0
-        assert orch.portfolio_state.cash == 80_000 + 8 * 115
+        assert orch.portfolio_state.cash == pytest.approx(
+            80_000 + 8 * 115 - _friction(8, 115.0)
+        )
 
     def test_buy_reduces_short(self):
         existing = Position(symbol="NVDA", quantity=-10, entry_price=300.0,
@@ -138,7 +167,9 @@ class TestFullClose:
         orch.apply_fill("AAPL", "SELL", 10, 120.0)
 
         assert "AAPL" not in orch.portfolio_state.positions
-        assert orch.portfolio_state.cash == 100_000 + 10 * 120
+        assert orch.portfolio_state.cash == pytest.approx(
+            100_000 + 10 * 120 - _friction(10, 120.0)
+        )
 
     def test_buy_closes_short(self):
         existing = Position(symbol="TSLA", quantity=-5, entry_price=200.0,
