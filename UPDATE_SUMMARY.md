@@ -16,6 +16,58 @@ Add new entries to the top so the latest update appears first.
 
 ---
 
+## 2026-04-07 Dynamic Position Sizing and Local Data Backtest Update
+
+**Author:** DY
+
+**Branch:** `full-version`
+
+**Status:** Synced from GitHub and verified locally on 2026-04-07.
+
+**Context:** This round focused on preventing valid trades from being rejected too aggressively by concentration checks, and making batch backtesting easier to run with checked-in local market data instead of depending entirely on fresh downloads.
+
+### What changed
+
+- Improved risk sizing behavior in [src/agentic_trading.py](e:/VScodeProjects/6115/agentic-trading-system-copy/src/agentic_trading.py):
+  - position sizing now accounts for the symbol's existing exposure before applying `max_concentration`
+  - if a symbol already has partial exposure, the remaining allowed notional is converted into a max-share cap instead of rejecting the trade outright
+  - this makes add-on trades behave more realistically under concentration limits
+
+- Relaxed quantitative signal thresholds in [src/data_tools.py](e:/VScodeProjects/6115/agentic-trading-system-copy/src/data_tools.py):
+  - the rule-based technical booster now emits `BUY` at score `>= 1` and `SELL` at score `<= -1`
+  - this is more permissive than the previous `>= 3` / `<= -3` thresholds and should surface more candidate signals during analysis and backtesting
+
+- Updated batch backtest flow in [src/run_batch_backtest.py](e:/VScodeProjects/6115/agentic-trading-system-copy/src/run_batch_backtest.py):
+  - batch backtests now try to read `data/{symbol}_hist.csv` first and only fetch remotely when no local file exists
+  - local CSV inputs are normalized and passed through the same technical-indicator pipeline before signal generation
+  - extra debug logging was added around missing prices, insufficient warmup history, signal output, and trade decisions
+  - the sample basket was refreshed to use `DBB` instead of `JJT`
+
+- Added checked-in historical datasets under `data/` for local analysis / backtesting:
+  - `AAPL`, `CPER`, `GLD`, `GOOGL`, `META`, `MSFT`, `NVDA`, `SLV`, `SMH`, and `TSLA`
+  - these files support reproducible local runs without re-downloading every symbol during testing
+
+### Local verification
+
+- synced local `full-version` to `origin/full-version`
+- backend regression suite passed: `39/39` tests
+- frontend production build completed successfully
+
+### What teammates should know
+
+- the checked-in `data/` CSV files are for historical analysis and batch backtesting; live user/account state is still stored in `trading.db`
+- watchlist symbols can still be entered by users through Settings, but scheduled analysis fetches fresh market data via `yfinance`; the local `data/` files are only used by the batch backtest script
+- frontend build currently succeeds with a chunk-size warning, but there is no release-blocking frontend failure in this update
+
+### Follow-up ideas
+
+- decide whether the newly checked-in historical CSVs should stay committed long-term or move to a separate sample-data workflow
+- consider adding a manual "analyze now" API/button so users can trigger signal generation immediately after editing their watchlist
+- clean up `datetime.utcnow()` deprecation warnings in the database layer when convenient
+
+
+---
+
 ## 2026-04-07 Deployment Readiness and Reliability Cleanup
 
 **Author:** Nora + Codex review sync
