@@ -4,12 +4,12 @@ scheduler.py -- Cron entry point + concurrent dispatch.
 Three sessions per day (all times ET / New York):
 
     07:30  analyze  -- fetch data, run LLM analysis, save signals to DB
-    09:30  trade    -- read today's signals from DB, execute open orders
+    09:50  trade    -- read today's signals from DB, execute open orders
     15:30  close    -- flatten all open positions (end-of-day)
 
 Crontab (Singapore time, summer/DST, UTC+8):
     30 19 * * 1-5  cd /path/to/project && python src/scheduler.py --session analyze
-    30 21 * * 1-5  cd /path/to/project && python src/scheduler.py --session trade
+    50 21 * * 1-5  cd /path/to/project && python src/scheduler.py --session trade
     30  3 * * 2-6  cd /path/to/project && python src/scheduler.py --session close
 """
 
@@ -27,6 +27,7 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(__file__))
 
 from services.trading_sessions import analyze_for_user, trade_for_user, close_for_user
+from param_optimizer import optimize_all_users
 import database as db
 
 logging.basicConfig(
@@ -51,7 +52,9 @@ _SESSION_FN = {
 
 def run_all_users(session: str, max_workers: int = 4):
     api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
+    if session in {"trade", "close"}:
+        api_key = api_key or None
+    elif not api_key:
         log.error("OPENROUTER_API_KEY not set -- aborting")
         sys.exit(1)
 
@@ -64,6 +67,10 @@ def run_all_users(session: str, max_workers: int = 4):
     log.info(f"=== Scheduler [{session.upper()}] {datetime.now(timezone.utc).isoformat()} ===")
     log.info(f"Running for {len(users)} user(s) with max_workers={max_workers}")
 
+    if session == "analyze" and api_key:
+        log.info("Running AI parameter optimization before analysis...")
+        optimize_all_users(api_key)
+
     worker_fn = _SESSION_FN[session]
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -72,7 +79,12 @@ def run_all_users(session: str, max_workers: int = 4):
             for user in users
         }
         for future in as_completed(futures):
-            results.append(future.result())
+            user_id = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                log.error(f"[{session.upper()}] {user_id} failed: {exc}", exc_info=True)
+                results.append({"user_id": user_id, "status": "error", "reason": str(exc)})
 
     ok      = [r for r in results if r["status"] == "ok"]
     skipped = [r for r in results if r["status"] == "skipped"]

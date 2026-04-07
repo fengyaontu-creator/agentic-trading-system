@@ -33,6 +33,11 @@ class TradingParams(BaseModel):
     stop_loss_multiplier: float = 2.0   # volatility multiplier for stop-loss
     take_profit_pct: float = 0.05       # take-profit target %
     min_confidence: float = 0.3         # minimum signal confidence to trade
+    # Trailing stop thresholds
+    trailing_stop_high_profit: float = 0.10   # profit % to start aggressive trailing
+    trailing_stop_low_profit: float = 0.05    # profit % to start moderate trailing
+    trailing_stop_cushion: float = 0.03       # cushion below profit for aggressive trail
+    trailing_stop_lock_pct: float = 0.02      # locked-in profit % for moderate trail
 
 
 class Position(BaseModel):
@@ -218,11 +223,11 @@ class RiskManagementAgent:
             else:
                 profit_pct = (existing.entry_price - current_price) / existing.entry_price
                 
-            if profit_pct > 0.10:
-                stop_offset = profit_pct - 0.03
+            if profit_pct > p.trailing_stop_high_profit:
+                stop_offset = profit_pct - p.trailing_stop_cushion
                 dynamic_stop = existing.entry_price * (1 + stop_offset) if is_long else existing.entry_price * (1 - stop_offset)
-            elif profit_pct > 0.05:
-                dynamic_stop = existing.entry_price * 1.02 if is_long else existing.entry_price * 0.98
+            elif profit_pct > p.trailing_stop_low_profit:
+                dynamic_stop = existing.entry_price * (1 + p.trailing_stop_lock_pct) if is_long else existing.entry_price * (1 - p.trailing_stop_lock_pct)
             else:
                 vol_offset = volatility * p.stop_loss_multiplier
                 dynamic_stop = existing.entry_price * (1 - vol_offset) if is_long else existing.entry_price * (1 + vol_offset)
@@ -276,6 +281,15 @@ class RiskManagementAgent:
                 "take_profit": take_profit,
                 "should_trade": True,
             }
+        if action == "BUY" and existing and existing.quantity < 0:
+            return {
+                "position_size": abs(existing.quantity),
+                "risk_level": risk_level,
+                "reasoning": f"Closing short of {abs(existing.quantity)} shares",
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "should_trade": True,
+            }
 
         # New BUY or new SHORT -- VaR-based sizing with concentration check
         max_risk_dollar = portfolio_state.portfolio_value * p.risk_per_trade
@@ -288,11 +302,28 @@ class RiskManagementAgent:
         max_shares = int(max_risk_dollar / risk_per_share) if risk_per_share > 0 else 0
         position_size = int(max_shares * confidence)
 
+
+        existing_value = 0
+        if symbol in portfolio_state.positions:
+            existing_value = abs(portfolio_state.positions[symbol].quantity * current_price)
+        
+        max_allowed_value = portfolio_state.portfolio_value * p.max_concentration
+        remaining_value = max_allowed_value - existing_value
+        
+        if remaining_value > 0:
+            max_shares_allowed = int(remaining_value / current_price)
+            position_size = min(position_size, max_shares_allowed)
+        else:
+            position_size = 0  
         existing_values = {
             s: pos.quantity * pos.current_price
             for s, pos in portfolio_state.positions.items()
         }
         proposed_value = position_size * current_price
+
+
+
+
         concentration = check_concentration_limit(
             existing_values, portfolio_state.portfolio_value, symbol, proposed_value,
             max_concentration=p.max_concentration,
@@ -404,15 +435,22 @@ class TradingOrchestrator:
                 temperature=0.3,
             )
 
+        # User must already exist (created via the register API or CLI bootstrap).
+        # Constructing an orchestrator should be a pure read; previously this
+        # silently called init_db() + create_user(), which masked typo'd user_ids
+        # by quietly creating a fresh account and made the constructor a hidden
+        # write path.
+        if db.get_user(user_id) is None:
+            raise ValueError(
+                f"TradingOrchestrator: user_id={user_id!r} does not exist. "
+                f"Register the user before constructing an orchestrator."
+            )
+
         self.params = TradingParams(**db.load_user_settings(user_id))
         self.technical_agent = TechnicalAnalysisAgent(self.llm)
         self.sentiment_agent = SentimentAnalysisAgent(self.llm)
         self.risk_agent = RiskManagementAgent(self.llm, self.params)
         self.execution_agent = ExecutionAgent(self.llm)
-
-        # Load state from DB, or init fresh
-        db.init_db()
-        db.create_user(user_id, user_id)
 
         # Load user's Alpaca credentials from DB
         creds = db.get_alpaca_credentials(user_id)
@@ -480,6 +518,9 @@ class TradingOrchestrator:
 
         if new_qty == 0:
             self.portfolio_state.positions.pop(symbol, None)
+            # Keep DB in sync -- otherwise a flattened symbol leaves a stale
+            # row that the next close_for_user / reconcile would act on.
+            db.save_position(self.user_id, symbol, 0, 0.0, 0.0, "")
         elif existing:
             existing.quantity = new_qty
             existing.entry_price = new_entry
@@ -609,6 +650,11 @@ if __name__ == "__main__":
     print(f"Trading symbols: {symbols}")
 
     user_id = os.getenv("TRADING_USER_ID", "default")
+    # CLI bootstrap: ensure DB exists and a default user is provisioned. Production
+    # paths (FastAPI, scheduler) must not rely on this -- they go through register.
+    db.init_db()
+    if db.get_user(user_id) is None:
+        db.create_user(user_id, user_id)
     orchestrator = TradingOrchestrator(api_key=api_key, user_id=user_id, initial_capital=100000)
 
     # If symbols passed via CLI or .env, save them to DB for this user

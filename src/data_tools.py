@@ -129,10 +129,10 @@ def generate_ml_signal(df: pd.DataFrame) -> Dict:
         score -= 1
         reasons.append("RSI and MACD aligned bearish")
 
-    if score >= 3:
+    if score >= 1:
         signal = "BUY"
         confidence_boost = min(score * 0.05, 0.20)
-    elif score <= -3:
+    elif score <= -1:
         signal = "SELL"
         confidence_boost = min(abs(score) * 0.05, 0.20)
     else:
