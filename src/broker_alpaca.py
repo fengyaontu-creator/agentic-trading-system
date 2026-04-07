@@ -110,6 +110,99 @@ def submit_market_order(symbol: str, qty: int, side: str, api_key: str, api_secr
         raise
 
 
+def submit_bracket_order(
+    symbol: str,
+    qty: int,
+    side: str,
+    stop_price: float,
+    limit_price: float,
+    api_key: str,
+    api_secret: str,
+) -> Dict:
+    """Submit a bracket order (entry + take-profit + stop-loss) to Alpaca.
+
+    This is the preferred way to attach protective exits to a newly opened
+    position because Alpaca understands the order group and does not treat the
+    exit legs as conflicting standalone orders.
+    """
+    from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
+    from alpaca.trading.requests import MarketOrderRequest, StopLossRequest, TakeProfitRequest
+
+    try:
+        client = get_trading_client(api_key, api_secret)
+        order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
+        order_request = MarketOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=order_side,
+            time_in_force=TimeInForce.DAY,
+            order_class=OrderClass.BRACKET,
+            take_profit=TakeProfitRequest(limit_price=limit_price),
+            stop_loss=StopLossRequest(stop_price=stop_price),
+        )
+        order = client.submit_order(order_data=order_request)
+        order_dict = normalize_order(order)
+        log.info(
+            f"[BRACKET] {symbol} {side} x{qty} -> order_id={order_dict.get('order_id')}, "
+            f"status={order_dict.get('status')}, stop={stop_price}, take_profit={limit_price}"
+        )
+        return order_dict
+    except Exception as exc:
+        log.error(
+            f"[BRACKET] {symbol} {side} x{qty} stop={stop_price} take_profit={limit_price} failed: {exc}",
+            exc_info=True,
+        )
+        raise
+
+
+def submit_oto_order(
+    symbol: str,
+    qty: int,
+    side: str,
+    api_key: str,
+    api_secret: str,
+    *,
+    stop_price: Optional[float] = None,
+    limit_price: Optional[float] = None,
+) -> Dict:
+    """Submit an OTO order (entry + one protective exit) to Alpaca."""
+    from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
+    from alpaca.trading.requests import MarketOrderRequest, StopLossRequest, TakeProfitRequest
+
+    if stop_price is None and limit_price is None:
+        raise ValueError("OTO order requires stop_price or limit_price")
+
+    try:
+        client = get_trading_client(api_key, api_secret)
+        order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
+        request_kwargs = {
+            "symbol": symbol,
+            "qty": qty,
+            "side": order_side,
+            "time_in_force": TimeInForce.DAY,
+            "order_class": OrderClass.OTO,
+        }
+        if limit_price is not None:
+            request_kwargs["take_profit"] = TakeProfitRequest(limit_price=limit_price)
+        if stop_price is not None:
+            request_kwargs["stop_loss"] = StopLossRequest(stop_price=stop_price)
+
+        order_request = MarketOrderRequest(**request_kwargs)
+        order = client.submit_order(order_data=order_request)
+        order_dict = normalize_order(order)
+        log.info(
+            f"[OTO] {symbol} {side} x{qty} -> order_id={order_dict.get('order_id')}, "
+            f"status={order_dict.get('status')}, stop={stop_price}, take_profit={limit_price}"
+        )
+        return order_dict
+    except Exception as exc:
+        log.error(
+            f"[OTO] {symbol} {side} x{qty} stop={stop_price} take_profit={limit_price} failed: {exc}",
+            exc_info=True,
+        )
+        raise
+
+
 def submit_limit_order(symbol: str, qty: int, side: str, limit_price: float, api_key: str, api_secret: str) -> Dict:
     """Submit a real paper limit order."""
     from alpaca.trading.enums import OrderSide, TimeInForce
@@ -193,6 +286,7 @@ def execute_trade(
     strategy: str = "MARKET",
     stop_loss: Optional[float] = None,
     take_profit: Optional[float] = None,
+    attach_protection: bool = True,
 ) -> Optional[Dict]:
     """
     Unified execution entrypoint for the orchestrator.
@@ -205,27 +299,112 @@ def execute_trade(
         log.warning(f"[EXECUTE] {symbol} {side} x{quantity} -- invalid quantity, skipping")
         return None
 
+    def _submit_protective_order(order_name: str, submit_fn, *args) -> None:
+        """Best-effort protective order submission.
+
+        Alpaca may reject separately-submitted stop/limit legs for an already-open
+        market order (for example, potential wash-trade detection). In that case we
+        keep the successful main order and surface a warning instead of discarding
+        the whole execution result.
+        """
+        try:
+            orders[order_name] = submit_fn(*args)
+        except Exception as exc:
+            log.warning(
+                f"[EXECUTE] {symbol} {side} x{quantity} ({strategy}) -- "
+                f"{order_name} submission failed after main order succeeded: {exc}",
+                exc_info=True,
+            )
+
     try:
         orders = {}
-        if strategy == "LIMIT":
+        use_bracket = (
+            attach_protection
+            and strategy == "MARKET"
+            and stop_loss is not None
+            and take_profit is not None
+        )
+        use_oto = (
+            attach_protection
+            and strategy == "MARKET"
+            and ((stop_loss is not None) ^ (take_profit is not None))
+        )
+
+        if use_bracket:
+            orders["main"] = submit_bracket_order(
+                symbol,
+                quantity,
+                side,
+                stop_loss,
+                take_profit,
+                api_key,
+                api_secret,
+            )
+        elif use_oto:
+            orders["main"] = submit_oto_order(
+                symbol,
+                quantity,
+                side,
+                api_key,
+                api_secret,
+                stop_price=stop_loss,
+                limit_price=take_profit,
+            )
+        elif strategy == "LIMIT":
             orders["main"] = submit_limit_order(symbol, quantity, side, price, api_key, api_secret)
         elif strategy == "STOP":
             orders["main"] = submit_stop_order(symbol, quantity, side, price, api_key, api_secret)
         else:
             orders["main"] = submit_market_order(symbol, quantity, side, api_key, api_secret)
 
-        # Set stop-loss and take-profit based on position direction
-        if side.upper() == "BUY":
+        # Fallback path: attach exits manually only when bracket orders are not in use.
+        if not use_bracket and not use_oto and attach_protection and side.upper() == "BUY":
             if stop_loss:
-                orders["stop_loss"] = submit_stop_order(symbol, quantity, "SELL", stop_loss, api_key, api_secret)
+                _submit_protective_order(
+                    "stop_loss",
+                    submit_stop_order,
+                    symbol,
+                    quantity,
+                    "SELL",
+                    stop_loss,
+                    api_key,
+                    api_secret,
+                )
             if take_profit:
-                orders["take_profit"] = submit_limit_order(symbol, quantity, "SELL", take_profit, api_key, api_secret)
-        elif side.upper() == "SELL":
+                _submit_protective_order(
+                    "take_profit",
+                    submit_limit_order,
+                    symbol,
+                    quantity,
+                    "SELL",
+                    take_profit,
+                    api_key,
+                    api_secret,
+                )
+        elif not use_bracket and not use_oto and attach_protection and side.upper() == "SELL":
             # For SHORT positions: stop_loss triggers BUY (to cover), take_profit is BUY limit (to close)
             if stop_loss:
-                orders["stop_loss"] = submit_stop_order(symbol, quantity, "BUY", stop_loss, api_key, api_secret)
+                _submit_protective_order(
+                    "stop_loss",
+                    submit_stop_order,
+                    symbol,
+                    quantity,
+                    "BUY",
+                    stop_loss,
+                    api_key,
+                    api_secret,
+                )
             if take_profit:
-                orders["take_profit"] = submit_limit_order(symbol, quantity, "BUY", take_profit, api_key, api_secret)
+                _submit_protective_order(
+                    "take_profit",
+                    submit_limit_order,
+                    symbol,
+                    quantity,
+                    "BUY",
+                    take_profit,
+                    api_key,
+                    api_secret,
+                )
 
         log.info(f"[EXECUTE] {symbol} {side} x{quantity} ({strategy}) completed with {len(orders)} order(s)")
         return orders

@@ -386,6 +386,7 @@ class ExecutionAgent:
         strategy: str = "MARKET",
         stop_loss: float = None,
         take_profit: float = None,
+        attach_protection: bool = True,
     ) -> Optional[Dict]:
         if quantity <= 0:
             log.warning(f"[EXEC] {symbol} {side} x{quantity} -- invalid quantity")
@@ -402,6 +403,7 @@ class ExecutionAgent:
                 strategy=strategy,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
+                attach_protection=attach_protection,
             )
             if result and result.get("main"):
                 order = result["main"]
@@ -572,6 +574,13 @@ class TradingOrchestrator:
         if execution_decision.get("execute") and risk_assessment.get("should_trade"):
             quantity = int(risk_assessment.get("position_size", 0))
             side = technical_analysis.get("signal", "HOLD")
+            existing = self.portfolio_state.positions.get(symbol)
+            is_closing_trade = bool(
+                existing and (
+                    (existing.quantity > 0 and side == "SELL") or
+                    (existing.quantity < 0 and side == "BUY")
+                )
+            )
             order = self.execution_agent.execute_trade(
                 symbol, side, quantity, current_price,
                 api_key=self.alpaca_key,
@@ -579,6 +588,7 @@ class TradingOrchestrator:
                 strategy=execution_decision.get("execution_strategy", "MARKET"),
                 stop_loss=risk_assessment.get("stop_loss"),
                 take_profit=risk_assessment.get("take_profit"),
+                attach_protection=not is_closing_trade,
             )
 
             if order:

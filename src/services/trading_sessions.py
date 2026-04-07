@@ -121,6 +121,13 @@ def trade_for_user(user: dict, api_key: str) -> dict:
                 continue
 
             quantity = int(risk.get("position_size", 0))
+            existing = orchestrator.portfolio_state.positions.get(symbol)
+            is_closing_trade = bool(
+                existing and (
+                    (existing.quantity > 0 and sig["signal"] == "SELL") or
+                    (existing.quantity < 0 and sig["signal"] == "BUY")
+                )
+            )
             order = orchestrator.execution_agent.execute_trade(
                 symbol=symbol,
                 side=sig["signal"],
@@ -130,6 +137,7 @@ def trade_for_user(user: dict, api_key: str) -> dict:
                 api_secret=creds["api_secret"],
                 stop_loss=risk.get("stop_loss"),
                 take_profit=risk.get("take_profit"),
+                attach_protection=not is_closing_trade,
             )
 
             if order:
@@ -207,6 +215,7 @@ def close_for_user(user: dict, api_key: str) -> dict:
                 price=current_price,
                 api_key=creds["api_key"],
                 api_secret=creds["api_secret"],
+                attach_protection=False,
             )
             if order:
                 filled_price = order.get("filled_avg_price") or current_price
