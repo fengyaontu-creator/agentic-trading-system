@@ -77,6 +77,11 @@ class AlpacaReq(BaseModel):
     api_key: str
     api_secret: str
 
+class AlpacaStatus(BaseModel):
+    saved: bool
+    valid: bool | None
+    detail: str | None = None
+
 class TradingParamsReq(BaseModel):
     risk_per_trade: float = 0.02
     max_concentration: float = 0.10
@@ -165,13 +170,31 @@ def history(user=Depends(_current_user)):
 
 # --Settings -------------------------------------------------------------------
 
+def _alpaca_status_for_credentials(api_key: str, api_secret: str) -> AlpacaStatus:
+    from broker_alpaca import get_account_info
+
+    try:
+        account = get_account_info(api_key, api_secret)
+        detail = f"Connected to Alpaca paper account ({account.get('status', 'unknown')})."
+        return AlpacaStatus(saved=True, valid=True, detail=detail)
+    except Exception as exc:
+        return AlpacaStatus(saved=True, valid=False, detail=str(exc))
+
+
+def _alpaca_status_for_user(uid: str) -> AlpacaStatus:
+    creds = db.get_alpaca_credentials(uid)
+    if not creds:
+        return AlpacaStatus(saved=False, valid=None, detail="Credentials not set.")
+    return _alpaca_status_for_credentials(creds["api_key"], creds["api_secret"])
+
 @app.get("/api/settings")
 def get_settings(user=Depends(_current_user)):
     uid = user["user_id"]
-    creds = db.get_alpaca_credentials(uid)
+    alpaca = _alpaca_status_for_user(uid)
     return {
         "symbols": db.get_user_symbols(uid),
-        "has_alpaca": bool(creds and creds.get("api_key")),
+        "has_alpaca": alpaca.saved,
+        "alpaca": alpaca.model_dump(),
         "trading_params": db.load_user_settings(uid),
     }
 
@@ -195,14 +218,19 @@ def update_trading_params(req: TradingParamsReq, user=Depends(_current_user)):
 def update_alpaca(req: AlpacaReq, user=Depends(_current_user)):
     if not req.api_key.strip() or not req.api_secret.strip():
         raise HTTPException(400, "Both API key and secret are required")
-    db.save_alpaca_credentials(user["user_id"], req.api_key.strip(), req.api_secret.strip())
-    return {"status": "saved"}
+    api_key = req.api_key.strip()
+    api_secret = req.api_secret.strip()
+    status = _alpaca_status_for_credentials(api_key, api_secret)
+    if status.valid is False:
+        raise HTTPException(400, f"Alpaca validation failed: {status.detail}")
+    db.save_alpaca_credentials(user["user_id"], api_key, api_secret)
+    return {"status": "saved", "alpaca": status.model_dump()}
 
 
 @app.delete("/api/settings/alpaca")
 def delete_alpaca(user=Depends(_current_user)):
     db.save_alpaca_credentials(user["user_id"], "", "")
-    return {"status": "removed"}
+    return {"status": "removed", "alpaca": AlpacaStatus(saved=False, valid=None, detail="Credentials not set.").model_dump()}
 
 
 # --Reconciliation ------------------------------------------------------------

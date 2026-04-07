@@ -39,8 +39,8 @@ export const api = {
   updateTradingParams: (params: TradingParams) =>
     req<{ status: string; params: TradingParams }>("PUT", "/api/settings/trading", params),
   updateAlpaca: (api_key: string, api_secret: string) =>
-    req("PUT", "/api/settings/alpaca", { api_key, api_secret }),
-  deleteAlpaca: () => req("DELETE", "/api/settings/alpaca"),
+    req<{ status: string; alpaca: AlpacaStatus }>("PUT", "/api/settings/alpaca", { api_key, api_secret }),
+  deleteAlpaca: () => req<{ status: string; alpaca: AlpacaStatus }>("DELETE", "/api/settings/alpaca"),
 };
 
 // -- Types --------------------------------------------------------------------
@@ -108,5 +108,12 @@ export interface SignalsData {
 export interface SettingsData {
   symbols: string[];
   has_alpaca: boolean;
+  alpaca: AlpacaStatus;
   trading_params: TradingParams;
+}
+
+export interface AlpacaStatus {
+  saved: boolean;
+  valid: boolean | null;
+  detail: string | null;
 }

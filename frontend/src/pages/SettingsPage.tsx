@@ -1,4 +1,4 @@
-import { CheckCircle, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, SettingsData, TradingParams } from "../api";
 
@@ -112,9 +112,9 @@ export default function SettingsPage() {
     e.preventDefault();
     setAlpacaMsg(""); setAlpacaErr("");
     try {
-      await api.updateAlpaca(alpacaKey, alpacaSecret);
+      const result = await api.updateAlpaca(alpacaKey, alpacaSecret);
       await refreshSettings();
-      setAlpacaMsg("Credentials saved and encrypted.");
+      setAlpacaMsg(result.alpaca.detail ?? "Credentials saved and verified.");
       setAlpacaKey(""); setAlpacaSecret("");
     } catch (err: unknown) {
       setAlpacaErr(err instanceof Error ? err.message : "Failed");
@@ -242,11 +242,34 @@ export default function SettingsPage() {
       <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
         <h2 className="mb-4 text-sm font-semibold text-gray-300">Alpaca Paper Trading</h2>
 
-        {settings?.has_alpaca && (
-          <div className="mb-4 flex items-center justify-between rounded-lg border border-green-800 bg-green-900/20 px-4 py-3">
-            <div className="flex items-center gap-2 text-sm text-green-400">
-              <CheckCircle className="h-4 w-4" />
-              Credentials are set
+        {settings?.alpaca.saved ? (
+          <div
+            className={`mb-4 flex items-center justify-between rounded-lg px-4 py-3 ${
+              settings.alpaca.valid
+                ? "border border-green-800 bg-green-900/20"
+                : "border border-red-800 bg-red-900/20"
+            }`}
+          >
+            <div
+              className={`flex items-start gap-2 text-sm ${
+                settings.alpaca.valid ? "text-green-400" : "text-red-400"
+              }`}
+            >
+              {settings.alpaca.valid ? (
+                <CheckCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              ) : (
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              )}
+              <div>
+                <p>
+                  {settings.alpaca.valid
+                    ? "Credentials saved and verified"
+                    : "Credentials saved but invalid"}
+                </p>
+                {settings.alpaca.detail && (
+                  <p className="mt-1 text-xs opacity-80">{settings.alpaca.detail}</p>
+                )}
+              </div>
             </div>
             <button
               onClick={removeAlpaca}
@@ -255,6 +278,10 @@ export default function SettingsPage() {
               <Trash2 className="h-3 w-3" />
               Remove
             </button>
+          </div>
+        ) : (
+          <div className="mb-4 rounded-lg border border-gray-800 bg-gray-950/40 px-4 py-3 text-sm text-gray-500">
+            No Alpaca credentials saved yet.
           </div>
         )}
 
@@ -290,7 +317,7 @@ export default function SettingsPage() {
         </form>
 
         <p className="mt-3 text-xs text-gray-600">
-          Credentials are encrypted with Fernet before being stored in the database.
+          Credentials are encrypted with Fernet before being stored in the database and are validated against Alpaca when saved.
         </p>
       </div>
 
