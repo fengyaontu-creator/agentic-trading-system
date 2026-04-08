@@ -75,6 +75,10 @@ export default function SettingsPage() {
   const [alpacaMsg, setAlpacaMsg] = useState("");
   const [alpacaErr, setAlpacaErr] = useState("");
 
+  // Telegram state
+  const [telegramMsg, setTelegramMsg] = useState("");
+  const [telegramErr, setTelegramErr] = useState("");
+
   // Trading params state
   const [tradingParams, setTradingParams] = useState<TradingParams | null>(null);
   const [paramsMsg, setParamsMsg] = useState("");
@@ -141,6 +145,44 @@ export default function SettingsPage() {
       setAlpacaMsg("Credentials removed.");
     } catch (err: unknown) {
       setAlpacaErr(err instanceof Error ? err.message : "Failed");
+    }
+  }
+
+  async function createTelegramBind() {
+    setTelegramMsg(""); setTelegramErr("");
+    try {
+      const result = await api.createTelegramBind();
+      setSettings((prev) => prev ? { ...prev, telegram: result.telegram } : prev);
+      const handle = result.telegram.bot_username ? `@${result.telegram.bot_username}` : "your Telegram bot";
+      setTelegramMsg(`Send /start ${result.telegram.pending_code} to ${handle}, then click Verify Binding.`);
+    } catch (err: unknown) {
+      setTelegramErr(err instanceof Error ? err.message : "Failed");
+    }
+  }
+
+  async function verifyTelegramBind() {
+    setTelegramMsg(""); setTelegramErr("");
+    try {
+      const result = await api.verifyTelegramBind();
+      await refreshSettings();
+      if (result.status === "linked") {
+        setTelegramMsg("Telegram notifications connected.");
+      } else {
+        setTelegramMsg(result.detail ?? "Still waiting for the Telegram /start message.");
+      }
+    } catch (err: unknown) {
+      setTelegramErr(err instanceof Error ? err.message : "Failed");
+    }
+  }
+
+  async function removeTelegramBind() {
+    setTelegramMsg(""); setTelegramErr("");
+    try {
+      await api.deleteTelegramBind();
+      await refreshSettings();
+      setTelegramMsg("Telegram notifications disconnected.");
+    } catch (err: unknown) {
+      setTelegramErr(err instanceof Error ? err.message : "Failed");
     }
   }
 
@@ -318,6 +360,90 @@ export default function SettingsPage() {
 
         <p className="mt-3 text-xs text-gray-600">
           Credentials are encrypted with Fernet before being stored in the database and are validated against Alpaca when saved.
+        </p>
+      </div>
+
+      {/* Telegram */}
+      <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+        <h2 className="mb-4 text-sm font-semibold text-gray-300">Telegram Notifications</h2>
+
+        {!settings?.telegram.configured ? (
+          <div className="mb-4 rounded-lg border border-yellow-800 bg-yellow-900/20 px-4 py-3 text-sm text-yellow-400">
+            Telegram bot is not configured on the server yet. Add <code className="font-mono">TELEGRAM_BOT_TOKEN</code> to enable binding.
+          </div>
+        ) : settings.telegram.connected ? (
+          <div className="mb-4 flex items-center justify-between rounded-lg border border-green-800 bg-green-900/20 px-4 py-3">
+            <div className="flex items-start gap-2 text-sm text-green-400">
+              <CheckCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <p>Telegram notifications connected</p>
+                <p className="mt-1 text-xs opacity-80">
+                  {settings.telegram.chat_username
+                    ? `Linked as @${settings.telegram.chat_username}`
+                    : settings.telegram.chat_first_name
+                      ? `Linked as ${settings.telegram.chat_first_name}`
+                      : "Telegram chat linked"}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={removeTelegramBind}
+              className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300"
+            >
+              <Trash2 className="h-3 w-3" />
+              Remove
+            </button>
+          </div>
+        ) : (
+          <div className="mb-4 rounded-lg border border-gray-800 bg-gray-950/40 px-4 py-3 text-sm text-gray-500">
+            {settings.telegram.detail ?? "Telegram notifications are not linked yet."}
+          </div>
+        )}
+
+        {settings?.telegram.configured && !settings.telegram.connected && (
+          <div className="space-y-3">
+            <div className="rounded-lg border border-gray-800 bg-gray-950/40 px-4 py-3 text-sm text-gray-400">
+              <p>1. Click Generate Binding Code.</p>
+              <p>2. In Telegram, send <code className="font-mono">/start CODE</code> to {settings.telegram.bot_username ? `@${settings.telegram.bot_username}` : "your bot"}.</p>
+              <p>3. Come back here and click Verify Binding.</p>
+            </div>
+
+            {settings.telegram.pending_code && (
+              <div className="rounded-lg border border-indigo-800 bg-indigo-900/20 px-4 py-3">
+                <p className="text-xs uppercase tracking-wide text-indigo-300">Current Binding Code</p>
+                <p className="mt-1 font-mono text-lg text-indigo-200">{settings.telegram.pending_code}</p>
+                {settings.telegram.pending_expires_at && (
+                  <p className="mt-1 text-xs text-indigo-300/80">
+                    Expires {new Date(settings.telegram.pending_expires_at).toLocaleString()}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {telegramMsg && <p className="text-sm text-green-400">{telegramMsg}</p>}
+            {telegramErr && <p className="text-sm text-red-400">{telegramErr}</p>}
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={createTelegramBind}
+                className="rounded-lg bg-indigo-600 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-indigo-500"
+              >
+                {settings.telegram.pending_code ? "Regenerate Code" : "Generate Binding Code"}
+              </button>
+              <button
+                type="button"
+                onClick={verifyTelegramBind}
+                className="rounded-lg border border-gray-700 bg-gray-800 py-2.5 text-sm font-semibold text-gray-100 transition-colors hover:border-gray-600 hover:bg-gray-700"
+              >
+                Verify Binding
+              </button>
+            </div>
+          </div>
+        )}
+
+        <p className="mt-3 text-xs text-gray-600">
+          Once linked, the system sends a Telegram message whenever a BUY or SELL order is executed.
         </p>
       </div>
 

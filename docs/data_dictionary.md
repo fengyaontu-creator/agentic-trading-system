@@ -14,6 +14,11 @@ All data is stored in **SQLite** (`trading.db`). Timestamps use ISO 8601 format.
 | `password_hash` | TEXT | PBKDF2-HMAC-SHA256 salted hash |
 | `alpaca_key_enc` | TEXT | Fernet-encrypted Alpaca API key |
 | `alpaca_secret_enc` | TEXT | Fernet-encrypted Alpaca secret |
+| `telegram_chat_id` | TEXT | Bound Telegram chat ID for notifications |
+| `telegram_chat_username` | TEXT | Telegram username captured during binding |
+| `telegram_chat_first_name` | TEXT | Telegram first name captured during binding |
+| `telegram_bind_code` | TEXT | Pending one-time bind code shown in Settings |
+| `telegram_bind_expires_at` | TEXT | Expiry timestamp for the pending bind code |
 | `created_at` | TEXT | Registration timestamp |
 
 ### user_symbols
@@ -104,6 +109,16 @@ All data is stored in **SQLite** (`trading.db`). Timestamps use ISO 8601 format.
 {
   "symbols": ["AAPL"],
   "has_alpaca": true,
+  "telegram": {
+    "configured": true,
+    "connected": false,
+    "bot_username": "my_trade_bot",
+    "chat_username": null,
+    "chat_first_name": null,
+    "pending_code": "ABCD2345",
+    "pending_expires_at": "2026-04-08T12:34:56+00:00",
+    "detail": "Telegram binding pending. Send the code to the bot, then click Verify."
+  },
   "trading_params": {
     "risk_per_trade": 0.02,
     "max_concentration": 0.10,

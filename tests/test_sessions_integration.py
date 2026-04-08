@@ -292,6 +292,37 @@ def test_trade_skips_user_without_credentials(isolated_db):
     assert len(db.get_pending_signals(uid, _FIXED_DATE_STR)) == 1
 
 
+def test_trade_notification_failure_does_not_block_execution(isolated_db, test_user):
+    """Telegram notification failures must not prevent the trade from completing."""
+    db = isolated_db
+    uid = test_user
+    db.save_signal(uid, "AAPL", _FIXED_DATE_STR, "BUY", 0.6,
+                   reasoning="test", technical_score=0.5, sentiment_score=0.1)
+
+    import agentic_trading
+    from services import trading_sessions
+
+    with patch.object(trading_sessions, "datetime", _FrozenDatetime), \
+         patch.object(trading_sessions, "is_market_open", return_value=True), \
+         patch.object(trading_sessions, "reconcile_positions", return_value={"ok": True, "diffs": []}), \
+         patch.object(trading_sessions, "fetch_market_data") as mock_fmd_sessions, \
+         patch.object(trading_sessions, "notify_trade_fill", side_effect=RuntimeError("telegram down")), \
+         patch.object(agentic_trading, "alpaca_execute_trade") as mock_exec:
+
+        mock_fmd_sessions.invoke.return_value = _market_data_json(price=150.0, signal="BUY")
+        mock_exec.return_value = _fake_alpaca_order("order-open", 150.0)
+
+        result = trading_sessions.trade_for_user({"user_id": uid}, api_key=None)
+
+    assert result["status"] == "ok"
+    assert result["trades"] == 1
+    assert mock_exec.call_count == 1
+    trades = db.get_trade_history(uid)
+    assert len(trades) == 1
+    assert trades[0]["side"] == "BUY"
+    assert db.get_pending_signals(uid, _FIXED_DATE_STR) == []
+
+
 # -----------------------------------------------------------------------------
 # close_for_user uses a strict 'intraday' whitelist: any other value (legacy
 # rows, typos, NULL) must NOT be flattened. Invalid enum values are rejected

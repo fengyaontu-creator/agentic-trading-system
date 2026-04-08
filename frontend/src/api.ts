@@ -41,6 +41,12 @@ export const api = {
   updateAlpaca: (api_key: string, api_secret: string) =>
     req<{ status: string; alpaca: AlpacaStatus }>("PUT", "/api/settings/alpaca", { api_key, api_secret }),
   deleteAlpaca: () => req<{ status: string; alpaca: AlpacaStatus }>("DELETE", "/api/settings/alpaca"),
+  createTelegramBind: () =>
+    req<{ status: string; telegram: TelegramStatus }>("POST", "/api/settings/telegram/bind"),
+  verifyTelegramBind: () =>
+    req<{ status: string; telegram: TelegramStatus; detail?: string }>("POST", "/api/settings/telegram/verify"),
+  deleteTelegramBind: () =>
+    req<{ status: string; telegram: TelegramStatus }>("DELETE", "/api/settings/telegram"),
 };
 
 // -- Types --------------------------------------------------------------------
@@ -109,11 +115,23 @@ export interface SettingsData {
   symbols: string[];
   has_alpaca: boolean;
   alpaca: AlpacaStatus;
+  telegram: TelegramStatus;
   trading_params: TradingParams;
 }
 
 export interface AlpacaStatus {
   saved: boolean;
   valid: boolean | null;
+  detail: string | null;
+}
+
+export interface TelegramStatus {
+  configured: boolean;
+  connected: boolean;
+  bot_username: string | null;
+  chat_username: string | null;
+  chat_first_name: string | null;
+  pending_code: string | null;
+  pending_expires_at: string | null;
   detail: string | null;
 }

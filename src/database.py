@@ -63,6 +63,11 @@ def init_db():
                 password_hash    TEXT,
                 alpaca_key_enc   TEXT,
                 alpaca_secret_enc TEXT,
+                telegram_chat_id TEXT,
+                telegram_chat_username TEXT,
+                telegram_chat_first_name TEXT,
+                telegram_bind_code TEXT,
+                telegram_bind_expires_at TEXT,
                 created_at       TEXT NOT NULL
             );
 
@@ -177,6 +182,26 @@ def init_db():
             pass
         try:
             conn.execute("ALTER TABLE user_settings ADD COLUMN last_param_update_reason TEXT")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN telegram_chat_id TEXT")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN telegram_chat_username TEXT")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN telegram_chat_first_name TEXT")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN telegram_bind_code TEXT")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN telegram_bind_expires_at TEXT")
         except Exception:
             pass
 
@@ -312,6 +337,98 @@ def get_alpaca_credentials(user_id: str) -> Optional[Dict]:
     return {
         "api_key": api_key,
         "api_secret": api_secret,
+    }
+
+
+def save_telegram_binding(
+    user_id: str,
+    chat_id: str,
+    chat_username: Optional[str] = None,
+    chat_first_name: Optional[str] = None,
+):
+    """Persist a user's Telegram chat binding and clear any pending bind code."""
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE users
+               SET telegram_chat_id = ?,
+                   telegram_chat_username = ?,
+                   telegram_chat_first_name = ?,
+                   telegram_bind_code = NULL,
+                   telegram_bind_expires_at = NULL
+               WHERE user_id = ?""",
+            (str(chat_id), chat_username, chat_first_name, user_id),
+        )
+
+
+def clear_telegram_binding(user_id: str):
+    """Remove a user's Telegram chat binding and any pending bind code."""
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE users
+               SET telegram_chat_id = NULL,
+                   telegram_chat_username = NULL,
+                   telegram_chat_first_name = NULL,
+                   telegram_bind_code = NULL,
+                   telegram_bind_expires_at = NULL
+               WHERE user_id = ?""",
+            (user_id,),
+        )
+
+
+def get_telegram_binding(user_id: str) -> Optional[Dict]:
+    """Return a user's Telegram chat binding, or None if not linked."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT telegram_chat_id, telegram_chat_username, telegram_chat_first_name
+               FROM users WHERE user_id = ?""",
+            (user_id,),
+        ).fetchone()
+    if not row or not row["telegram_chat_id"]:
+        return None
+    return {
+        "chat_id": row["telegram_chat_id"],
+        "chat_username": row["telegram_chat_username"],
+        "chat_first_name": row["telegram_chat_first_name"],
+    }
+
+
+def save_telegram_bind_code(user_id: str, code: str, expires_at: str):
+    """Store a one-time Telegram bind code for the user."""
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE users
+               SET telegram_bind_code = ?,
+                   telegram_bind_expires_at = ?
+               WHERE user_id = ?""",
+            (code, expires_at, user_id),
+        )
+
+
+def clear_telegram_bind_code(user_id: str):
+    """Clear any pending Telegram bind code for the user."""
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE users
+               SET telegram_bind_code = NULL,
+                   telegram_bind_expires_at = NULL
+               WHERE user_id = ?""",
+            (user_id,),
+        )
+
+
+def get_telegram_bind_code(user_id: str) -> Optional[Dict]:
+    """Return the user's pending Telegram bind code, if any."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT telegram_bind_code, telegram_bind_expires_at
+               FROM users WHERE user_id = ?""",
+            (user_id,),
+        ).fetchone()
+    if not row or not row["telegram_bind_code"]:
+        return None
+    return {
+        "code": row["telegram_bind_code"],
+        "expires_at": row["telegram_bind_expires_at"],
     }
 
 

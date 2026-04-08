@@ -15,6 +15,7 @@ import database as db
 from agentic_trading import TradingOrchestrator
 from broker_alpaca import reconcile_positions
 from data_tools import fetch_market_data
+from telegram_service import notify_trade_fill
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,14 @@ def is_market_open() -> bool:
     market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
     return market_open <= now <= market_close
+
+
+def _notify_fill_safe(**kwargs):
+    """Best-effort notification wrapper; trade execution must not depend on it."""
+    try:
+        notify_trade_fill(**kwargs)
+    except Exception as exc:
+        log.warning("[TELEGRAM] fill notification crashed: %s", exc)
 
 
 # -- Analyze session -----------------------------------------------------------
@@ -146,6 +155,15 @@ def trade_for_user(user: dict, api_key: str) -> dict:
                     symbol, sig["signal"], quantity, filled_price, order.get("order_id"),
                 )
                 db.mark_signal_executed(user_id, symbol, today)
+                _notify_fill_safe(
+                    user_id=user_id,
+                    session="trade",
+                    symbol=symbol,
+                    side=sig["signal"],
+                    quantity=quantity,
+                    price=filled_price,
+                    order_id=order.get("order_id"),
+                )
                 trades += 1
                 log.info(f"[TRADE] {user_id}/{symbol} -> {sig['signal']} x{quantity} @ {filled_price}")
 
@@ -220,6 +238,15 @@ def close_for_user(user: dict, api_key: str) -> dict:
             if order:
                 filled_price = order.get("filled_avg_price") or current_price
                 orchestrator.apply_fill(symbol, side, abs_qty, filled_price, order.get("order_id"))
+                _notify_fill_safe(
+                    user_id=user_id,
+                    session="close",
+                    symbol=symbol,
+                    side=side,
+                    quantity=abs_qty,
+                    price=filled_price,
+                    order_id=order.get("order_id"),
+                )
                 trades += 1
                 log.info(f"[CLOSE] {user_id}/{symbol} -> {side} x{abs_qty} @ {filled_price}")
         except Exception as exc:

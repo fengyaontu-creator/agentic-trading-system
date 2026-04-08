@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 load_dotenv()
 sys.path.insert(0, os.path.dirname(__file__))
 import database as db
+import telegram_service
 
 db.init_db()
 
@@ -80,6 +81,16 @@ class AlpacaReq(BaseModel):
 class AlpacaStatus(BaseModel):
     saved: bool
     valid: bool | None
+    detail: str | None = None
+
+class TelegramStatus(BaseModel):
+    configured: bool
+    connected: bool
+    bot_username: str | None = None
+    chat_username: str | None = None
+    chat_first_name: str | None = None
+    pending_code: str | None = None
+    pending_expires_at: str | None = None
     detail: str | None = None
 
 class TradingParamsReq(BaseModel):
@@ -187,14 +198,45 @@ def _alpaca_status_for_user(uid: str) -> AlpacaStatus:
         return AlpacaStatus(saved=False, valid=None, detail="Credentials not set.")
     return _alpaca_status_for_credentials(creds["api_key"], creds["api_secret"])
 
+
+def _telegram_status_for_user(uid: str) -> TelegramStatus:
+    configured = telegram_service.is_bot_configured()
+    binding = db.get_telegram_binding(uid)
+    pending = db.get_telegram_bind_code(uid)
+    bot_username = telegram_service.get_bot_username() if configured else None
+
+    detail = None
+    if not configured:
+        detail = "Telegram bot is not configured on the server."
+    elif binding:
+        target = binding.get("chat_username") or binding.get("chat_first_name") or binding.get("chat_id")
+        detail = f"Linked to Telegram chat {target}."
+    elif pending:
+        detail = "Telegram binding pending. Send the code to the bot, then click Verify."
+    else:
+        detail = "Telegram notifications are not linked yet."
+
+    return TelegramStatus(
+        configured=configured,
+        connected=bool(binding),
+        bot_username=bot_username,
+        chat_username=binding.get("chat_username") if binding else None,
+        chat_first_name=binding.get("chat_first_name") if binding else None,
+        pending_code=pending.get("code") if pending else None,
+        pending_expires_at=pending.get("expires_at") if pending else None,
+        detail=detail,
+    )
+
 @app.get("/api/settings")
 def get_settings(user=Depends(_current_user)):
     uid = user["user_id"]
     alpaca = _alpaca_status_for_user(uid)
+    telegram = _telegram_status_for_user(uid)
     return {
         "symbols": db.get_user_symbols(uid),
         "has_alpaca": alpaca.saved,
         "alpaca": alpaca.model_dump(),
+        "telegram": telegram.model_dump(),
         "trading_params": db.load_user_settings(uid),
     }
 
@@ -231,6 +273,43 @@ def update_alpaca(req: AlpacaReq, user=Depends(_current_user)):
 def delete_alpaca(user=Depends(_current_user)):
     db.save_alpaca_credentials(user["user_id"], "", "")
     return {"status": "removed", "alpaca": AlpacaStatus(saved=False, valid=None, detail="Credentials not set.").model_dump()}
+
+
+@app.post("/api/settings/telegram/bind")
+def create_telegram_bind(user=Depends(_current_user)):
+    uid = user["user_id"]
+    if not telegram_service.is_bot_configured():
+        raise HTTPException(400, "Telegram bot is not configured on the server")
+    try:
+        telegram_service.create_bind_code(uid)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+    telegram = _telegram_status_for_user(uid)
+    return {"status": "pending", "telegram": telegram.model_dump()}
+
+
+@app.post("/api/settings/telegram/verify")
+def verify_telegram_bind(user=Depends(_current_user)):
+    uid = user["user_id"]
+    try:
+        telegram_service.confirm_bind_code(uid)
+        telegram = _telegram_status_for_user(uid)
+        return {"status": "linked", "telegram": telegram.model_dump()}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except LookupError as exc:
+        telegram = _telegram_status_for_user(uid)
+        return {"status": "pending", "telegram": telegram.model_dump(), "detail": str(exc)}
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.delete("/api/settings/telegram")
+def delete_telegram_bind(user=Depends(_current_user)):
+    uid = user["user_id"]
+    db.clear_telegram_binding(uid)
+    telegram = _telegram_status_for_user(uid)
+    return {"status": "removed", "telegram": telegram.model_dump()}
 
 
 # --Reconciliation ------------------------------------------------------------

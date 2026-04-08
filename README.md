@@ -7,7 +7,7 @@ For the latest branch status, deployment notes, and teammate handoff summary, se
 ## What It Does
 
 - Supports multi-user registration and login
-- Lets each user manage their own watchlist, trading parameters, and Alpaca paper-trading credentials
+- Lets each user manage their own watchlist, trading parameters, Alpaca paper-trading credentials, and Telegram trade notifications
 - Validates Alpaca credentials when they are saved in Settings, so unusable paper keys are rejected immediately
 - Runs scheduled sessions for:
   - `analyze`: optimize per-user parameters, then generate daily signals
@@ -73,6 +73,7 @@ These are shared by the deployed system:
 - `OPENROUTER_API_KEY`
 - `NEWS_API_KEY`
 - `ALPHA_VANTAGE_API_KEY`
+- `TELEGRAM_BOT_TOKEN`
 - `CORS_ORIGINS`
 - `DB_PATH`
 
@@ -82,6 +83,7 @@ These belong to each user account:
 
 - Alpaca `API Key`
 - Alpaca `API Secret`
+- Telegram chat binding
 - watchlist symbols
 - trading parameters
 - strategy mode (`intraday` or `swing`)
@@ -106,6 +108,7 @@ DB_ENCRYPTION_KEY=replace-with-a-fernet-key
 OPENROUTER_API_KEY=replace-with-your-openrouter-key
 NEWS_API_KEY=replace-with-your-newsapi-key
 ALPHA_VANTAGE_API_KEY=replace-with-your-alpha-vantage-key
+TELEGRAM_BOT_TOKEN=
 
 CORS_ORIGINS=http://localhost:5173,http://localhost:3000
 DB_PATH=trading.db
@@ -124,6 +127,7 @@ Notes:
 - `JWT_SECRET` is required for login tokens
 - `DB_ENCRYPTION_KEY` is required to save and read encrypted Alpaca credentials
 - scheduled analysis requires `OPENROUTER_API_KEY`
+- `TELEGRAM_BOT_TOKEN` enables Telegram bot binding and trade-fill notifications
 - deployed multi-user trading should use user-saved Alpaca credentials from Settings, not shared `.env` credentials
 
 Generate a Fernet key with:
@@ -220,6 +224,16 @@ Each user can choose a strategy in Settings:
 - `swing`: positions can be carried overnight
 
 Trading parameters are user-specific and persisted in the database.
+
+## Telegram Notifications
+
+When `TELEGRAM_BOT_TOKEN` is configured on the server, users can bind the shared bot from Settings:
+
+1. Click `Generate Binding Code`
+2. Send `/start CODE` to the bot in Telegram
+3. Click `Verify Binding`
+
+After the chat is linked, the backend sends a Telegram message whenever a `BUY` or `SELL` order is executed in the `trade` or `close` sessions. Notification delivery is best-effort only; a Telegram outage does not block the trade itself.
 
 ## Testing
 
