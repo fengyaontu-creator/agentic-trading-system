@@ -64,6 +64,7 @@ def test_verify_telegram_bind_links_chat(tmp_path, monkeypatch):
     database.save_telegram_bind_code("alice", "ABCD2345", expires_at)
 
     with patch.object(api.telegram_service, "get_bot_username", return_value="tradebot"), \
+         patch.object(api.telegram_service, "send_binding_success_message", return_value={"ok": True}), \
          patch.object(api.telegram_service, "_find_chat_for_code", return_value={
              "chat_id": "987654321",
              "chat_username": "alice_tg",
@@ -74,6 +75,7 @@ def test_verify_telegram_bind_links_chat(tmp_path, monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "linked"
+    assert body["detail"] == "Telegram connected. A confirmation message was sent to your chat."
     assert body["telegram"]["connected"] is True
     assert body["telegram"]["chat_username"] == "alice_tg"
     assert database.get_telegram_binding("alice") == {
@@ -101,3 +103,21 @@ def test_verify_telegram_bind_returns_pending_when_message_missing(tmp_path, mon
     assert "No matching Telegram /start code found yet." in body["detail"]
     assert body["telegram"]["pending_code"] == "ABCD2345"
     assert database.get_telegram_binding("alice") is None
+
+
+def test_send_telegram_test_message(tmp_path, monkeypatch):
+    api, database = _load_modules(tmp_path, monkeypatch)
+    client = TestClient(api.app)
+    headers = _auth_headers(client)
+    database.save_telegram_binding("alice", "987654321", "alice_tg", "Alice")
+
+    with patch.object(api.telegram_service, "get_bot_username", return_value="tradebot"), \
+         patch.object(api.telegram_service, "send_test_message", return_value={"ok": True}):
+        resp = client.post("/api/settings/telegram/test", headers=headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "sent"
+    assert body["detail"] == "Test message sent to your Telegram chat."
+    assert body["telegram"]["connected"] is True
+    assert body["telegram"]["chat_username"] == "alice_tg"

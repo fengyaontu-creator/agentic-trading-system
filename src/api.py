@@ -203,6 +203,8 @@ def _telegram_status_for_user(uid: str) -> TelegramStatus:
     configured = telegram_service.is_bot_configured()
     binding = db.get_telegram_binding(uid)
     pending = db.get_telegram_bind_code(uid)
+    # Avoid hitting Telegram on every Settings page load. The service caches
+    # getMe results in-process, so this is usually a fast local read.
     bot_username = telegram_service.get_bot_username() if configured else None
 
     detail = None
@@ -293,8 +295,13 @@ def verify_telegram_bind(user=Depends(_current_user)):
     uid = user["user_id"]
     try:
         telegram_service.confirm_bind_code(uid)
+        telegram_service.send_binding_success_message(uid)
         telegram = _telegram_status_for_user(uid)
-        return {"status": "linked", "telegram": telegram.model_dump()}
+        return {
+            "status": "linked",
+            "detail": "Telegram connected. A confirmation message was sent to your chat.",
+            "telegram": telegram.model_dump(),
+        }
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except LookupError as exc:
@@ -310,6 +317,23 @@ def delete_telegram_bind(user=Depends(_current_user)):
     db.clear_telegram_binding(uid)
     telegram = _telegram_status_for_user(uid)
     return {"status": "removed", "telegram": telegram.model_dump()}
+
+
+@app.post("/api/settings/telegram/test")
+def send_telegram_test(user=Depends(_current_user)):
+    uid = user["user_id"]
+    try:
+        telegram_service.send_test_message(uid)
+        telegram = _telegram_status_for_user(uid)
+        return {
+            "status": "sent",
+            "detail": "Test message sent to your Telegram chat.",
+            "telegram": telegram.model_dump(),
+        }
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
 
 
 # --Reconciliation ------------------------------------------------------------

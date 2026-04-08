@@ -47,6 +47,8 @@ export const api = {
     req<{ status: string; telegram: TelegramStatus; detail?: string }>("POST", "/api/settings/telegram/verify"),
   deleteTelegramBind: () =>
     req<{ status: string; telegram: TelegramStatus }>("DELETE", "/api/settings/telegram"),
+  sendTelegramTest: () =>
+    req<{ status: string; telegram: TelegramStatus; detail: string }>("POST", "/api/settings/telegram/test"),
 };
 
 // -- Types --------------------------------------------------------------------

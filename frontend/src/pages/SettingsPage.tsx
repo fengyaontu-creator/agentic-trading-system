@@ -166,7 +166,7 @@ export default function SettingsPage() {
       const result = await api.verifyTelegramBind();
       await refreshSettings();
       if (result.status === "linked") {
-        setTelegramMsg("Telegram notifications connected.");
+        setTelegramMsg(result.detail ?? "Telegram notifications connected.");
       } else {
         setTelegramMsg(result.detail ?? "Still waiting for the Telegram /start message.");
       }
@@ -181,6 +181,17 @@ export default function SettingsPage() {
       await api.deleteTelegramBind();
       await refreshSettings();
       setTelegramMsg("Telegram notifications disconnected.");
+    } catch (err: unknown) {
+      setTelegramErr(err instanceof Error ? err.message : "Failed");
+    }
+  }
+
+  async function sendTelegramTest() {
+    setTelegramMsg(""); setTelegramErr("");
+    try {
+      const result = await api.sendTelegramTest();
+      setSettings((prev) => prev ? { ...prev, telegram: result.telegram } : prev);
+      setTelegramMsg(result.detail);
     } catch (err: unknown) {
       setTelegramErr(err instanceof Error ? err.message : "Failed");
     }
@@ -372,27 +383,40 @@ export default function SettingsPage() {
             Telegram bot is not configured on the server yet. Add <code className="font-mono">TELEGRAM_BOT_TOKEN</code> to enable binding.
           </div>
         ) : settings.telegram.connected ? (
-          <div className="mb-4 flex items-center justify-between rounded-lg border border-green-800 bg-green-900/20 px-4 py-3">
-            <div className="flex items-start gap-2 text-sm text-green-400">
-              <CheckCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <div>
-                <p>Telegram notifications connected</p>
-                <p className="mt-1 text-xs opacity-80">
-                  {settings.telegram.chat_username
-                    ? `Linked as @${settings.telegram.chat_username}`
-                    : settings.telegram.chat_first_name
-                      ? `Linked as ${settings.telegram.chat_first_name}`
-                      : "Telegram chat linked"}
-                </p>
+          <div className="mb-4 rounded-lg border border-green-800 bg-green-900/20 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-start gap-2 text-sm text-green-400">
+                <CheckCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <p>Telegram notifications connected</p>
+                  <p className="mt-1 text-xs opacity-80">
+                    {settings.telegram.chat_username
+                      ? `Linked as @${settings.telegram.chat_username}`
+                      : settings.telegram.chat_first_name
+                        ? `Linked as ${settings.telegram.chat_first_name}`
+                        : "Telegram chat linked"}
+                  </p>
+                </div>
               </div>
+              <button
+                onClick={removeTelegramBind}
+                className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300"
+              >
+                <Trash2 className="h-3 w-3" />
+                Remove
+              </button>
             </div>
-            <button
-              onClick={removeTelegramBind}
-              className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300"
-            >
-              <Trash2 className="h-3 w-3" />
-              Remove
-            </button>
+            {telegramMsg && <p className="mt-3 text-sm text-green-300">{telegramMsg}</p>}
+            {telegramErr && <p className="mt-3 text-sm text-red-300">{telegramErr}</p>}
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={sendTelegramTest}
+                className="rounded-lg border border-green-700 bg-green-950/40 px-4 py-2 text-sm font-semibold text-green-200 transition-colors hover:border-green-600 hover:bg-green-900/30"
+              >
+                Send Test Message
+              </button>
+            </div>
           </div>
         ) : (
           <div className="mb-4 rounded-lg border border-gray-800 bg-gray-950/40 px-4 py-3 text-sm text-gray-500">

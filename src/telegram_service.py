@@ -14,6 +14,9 @@ log = logging.getLogger(__name__)
 
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _CODE_TTL_MINUTES = 10
+_BOT_USERNAME_CACHE: Optional[str] = None
+_BOT_USERNAME_CACHE_AT: Optional[datetime] = None
+_BOT_USERNAME_CACHE_TTL = timedelta(minutes=30)
 
 
 def get_bot_token() -> Optional[str]:
@@ -50,16 +53,22 @@ def _telegram_post(method: str, data: dict) -> dict:
     return payload
 
 
-def get_bot_username() -> Optional[str]:
+def get_bot_username(refresh: bool = False) -> Optional[str]:
     if not is_bot_configured():
         return None
+    global _BOT_USERNAME_CACHE, _BOT_USERNAME_CACHE_AT
+    if not refresh and _BOT_USERNAME_CACHE_AT:
+        if datetime.now(timezone.utc) - _BOT_USERNAME_CACHE_AT < _BOT_USERNAME_CACHE_TTL:
+            return _BOT_USERNAME_CACHE
     try:
         profile = _telegram_get("getMe")
         username = profile.get("result", {}).get("username")
-        return str(username) if username else None
+        _BOT_USERNAME_CACHE = str(username) if username else None
+        _BOT_USERNAME_CACHE_AT = datetime.now(timezone.utc)
+        return _BOT_USERNAME_CACHE
     except Exception as exc:
         log.warning("[TELEGRAM] getMe failed: %s", exc)
-        return None
+        return _BOT_USERNAME_CACHE
 
 
 def _generate_bind_code(length: int = 8) -> str:
@@ -146,6 +155,42 @@ def send_message(chat_id: str, text: str) -> dict:
             "disable_web_page_preview": "true",
         },
     )
+
+
+def send_test_message(user_id: str) -> dict:
+    """Send a one-off confirmation message to the bound Telegram chat."""
+    binding = db.get_telegram_binding(user_id)
+    if not binding:
+        raise ValueError("Telegram notifications are not linked yet.")
+    username = get_bot_username()
+    text = "\n".join(
+        [
+            "AlphaPing test message",
+            "Telegram notifications are connected and ready.",
+            f"User: {user_id}",
+            f"Bot: @{username}" if username else "Bot: configured",
+            f"Time (UTC): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}",
+        ]
+    )
+    return send_message(binding["chat_id"], text)
+
+
+def send_binding_success_message(user_id: str) -> dict:
+    """Send a welcome message immediately after Telegram binding succeeds."""
+    binding = db.get_telegram_binding(user_id)
+    if not binding:
+        raise ValueError("Telegram notifications are not linked yet.")
+    username = get_bot_username()
+    text = "\n".join(
+        [
+            "Telegram binding successful",
+            "You will now receive BUY and SELL execution alerts here.",
+            f"User: {user_id}",
+            f"Bot: @{username}" if username else "Bot: configured",
+            "Congratulations, your notifications are ready.",
+        ]
+    )
+    return send_message(binding["chat_id"], text)
 
 
 def _format_fill_message(
