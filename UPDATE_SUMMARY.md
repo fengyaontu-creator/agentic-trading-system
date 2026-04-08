@@ -16,6 +16,91 @@ Add new entries to the top so the latest update appears first.
 
 ---
 
+## 2026-04-08 Telegram Binding and Trade Notifications
+
+**Author:** Nora + Codex
+
+**Branch:** `full-version`
+
+**Status:** Pushed to GitHub, deployed to server, and manually verified on 2026-04-08.
+
+**Context:** This round added a user-facing Telegram notification flow so each user can bind the shared bot to their own Telegram chat and receive alerts when the system executes `BUY` or `SELL` orders. It also improved the UX after the first deployment by sending an immediate confirmation message after a successful bind and exposing a manual test-message action.
+
+### What changed
+
+- Added Telegram binding persistence and migrations in [src/database.py](e:/VScodeProjects/6115/agentic-trading-system-copy/src/database.py):
+  - users now store Telegram chat metadata and a pending one-time bind code
+  - binding state can be saved, cleared, regenerated, and re-read per user
+
+- Added a dedicated Telegram integration layer in [src/telegram_service.py](e:/VScodeProjects/6115/agentic-trading-system-copy/src/telegram_service.py):
+  - generates short-lived bind codes
+  - verifies `/start CODE` messages by polling Telegram updates
+  - sends post-bind confirmation messages, manual test messages, and trade-fill alerts
+  - caches bot username lookups to reduce repeated `getMe` latency on the Settings page
+
+- Extended Settings APIs in [src/api.py](e:/VScodeProjects/6115/agentic-trading-system-copy/src/api.py):
+  - `/api/settings` now returns a Telegram status block
+  - added bind, verify, remove, and test-message Telegram endpoints
+  - successful verification now sends a confirmation message immediately and returns a clearer success detail string
+
+- Routed live execution notifications through [src/services/trading_sessions.py](e:/VScodeProjects/6115/agentic-trading-system-copy/src/services/trading_sessions.py):
+  - trade-session fills and close-session fills now trigger Telegram alerts after successful execution
+  - notification failures remain best-effort only and do not block trade execution or DB updates
+
+- Updated the React Settings experience in [frontend/src/pages/SettingsPage.tsx](e:/VScodeProjects/6115/agentic-trading-system-copy/frontend/src/pages/SettingsPage.tsx) and [frontend/src/api.ts](e:/VScodeProjects/6115/agentic-trading-system-copy/frontend/src/api.ts):
+  - users can generate a bind code, verify the Telegram chat, remove a binding, and send a manual test message
+  - the connected state now shows the linked Telegram username and success/test feedback
+
+- Updated docs and config templates:
+  - added `TELEGRAM_BOT_TOKEN` to [.env.example](e:/VScodeProjects/6115/agentic-trading-system-copy/.env.example)
+  - documented the Telegram flow in [README.md](e:/VScodeProjects/6115/agentic-trading-system-copy/README.md)
+  - documented Telegram-related schema/API fields in [docs/data_dictionary.md](e:/VScodeProjects/6115/agentic-trading-system-copy/docs/data_dictionary.md)
+
+- Added regression coverage in [tests/test_api_telegram.py](e:/VScodeProjects/6115/agentic-trading-system-copy/tests/test_api_telegram.py) and [tests/test_sessions_integration.py](e:/VScodeProjects/6115/agentic-trading-system-copy/tests/test_sessions_integration.py):
+  - bind-code creation
+  - successful verification
+  - pending verification when the Telegram message has not arrived yet
+  - manual test-message endpoint
+  - notification-failure safety during trade execution
+
+### Verification
+
+- local backend verification passed before the first deploy:
+  - `tests/test_api_telegram.py`
+  - `tests/test_sessions_integration.py`
+  - `tests/test_database_credentials.py`
+  - total for that run: `9 passed`
+
+- local frontend production build completed successfully
+
+- server deployment completed successfully:
+  - pulled latest `full-version` to `/opt/agentic-trading-system`
+  - added `TELEGRAM_BOT_TOKEN` to the server-side `.env`
+  - rebuilt the frontend under `/opt/agentic-trading-system/frontend`
+  - restarted the FastAPI `uvicorn` process manually
+
+- post-deploy manual verification:
+  - the Settings page showed `Telegram Notifications`
+  - user `nora` successfully linked Telegram account `@Nora_0623`
+  - the bot `@alphaping_trade_bot` delivered the automatic "Telegram binding successful" confirmation message
+
+### What teammates should know
+
+- `TELEGRAM_BOT_TOKEN` is a shared platform secret and belongs in the server-side `.env`, not in per-user settings
+- Telegram chat binding is per user and stored in the database
+- frontend code changes require `npm run build` on the server before the new UI appears
+- the current production process is still manual: `git pull`, update `.env` if needed, rebuild frontend, restart `uvicorn`
+- the scheduler is not currently running as a visible long-lived `scheduler.py` process; it appears to be triggered separately (likely cron-based)
+
+### Follow-up ideas
+
+- add a friendlier `/start` response or help text so the bot chat does not feel silent outside the bind flow
+- allow users to choose which events should trigger Telegram alerts (for example, trade fills only vs. close-session fills too)
+- move API restart / frontend build into a more repeatable deploy script or systemd service workflow
+
+
+---
+
 ## 2026-04-07 Alpaca Advanced Orders and Credential Validation
 
 **Author:** Nora + Codex
