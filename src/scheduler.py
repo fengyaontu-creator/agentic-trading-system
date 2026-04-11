@@ -1,15 +1,17 @@
 """
 scheduler.py -- Cron entry point + concurrent dispatch.
 
-Three sessions per day (all times ET / New York):
+Four sessions per day (all times ET / New York):
 
     07:30  analyze  -- fetch data, run LLM analysis, save signals to DB
     09:50  trade    -- read today's signals from DB, execute open orders
+    14:30  remind   -- send close reminder for today's positions
     15:30  close    -- flatten all open positions (end-of-day)
 
 Crontab (Singapore time, summer/DST, UTC+8):
     30 19 * * 1-5  cd /path/to/project && python src/scheduler.py --session analyze
     50 21 * * 1-5  cd /path/to/project && python src/scheduler.py --session trade
+    30 02 * * 2-6  cd /path/to/project && python src/scheduler.py --session remind
     30  3 * * 2-6  cd /path/to/project && python src/scheduler.py --session close
 """
 
@@ -26,7 +28,7 @@ load_dotenv()
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from services.trading_sessions import analyze_for_user, trade_for_user, close_for_user
+from services.trading_sessions import analyze_for_user, trade_for_user, remind_for_user, close_for_user
 from param_optimizer import optimize_all_users
 import database as db
 
@@ -46,13 +48,14 @@ log = logging.getLogger(__name__)
 _SESSION_FN = {
     "analyze": analyze_for_user,
     "trade": trade_for_user,
+    "remind": remind_for_user,
     "close": close_for_user,
 }
 
 
 def run_all_users(session: str, max_workers: int = 4):
     api_key = os.getenv("OPENROUTER_API_KEY")
-    if session in {"trade", "close"}:
+    if session in {"trade", "remind", "close"}:
         api_key = api_key or None
     elif not api_key:
         log.error("OPENROUTER_API_KEY not set -- aborting")

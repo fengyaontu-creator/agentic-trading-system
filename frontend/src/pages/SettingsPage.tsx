@@ -1,6 +1,7 @@
 import { AlertTriangle, CheckCircle, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, SettingsData, TradingParams } from "../api";
+import { api, ControlMode, SettingsData, TradingParams } from "../api";
+import { formatLocal } from "../utils/time";
 
 const AI_PARAM_LABELS: { key: keyof TradingParams; label: string; format: (v: number) => string }[] = [
   { key: "risk_per_trade",       label: "Risk per Trade",             format: (v) => `${(v * 100).toFixed(1)}%` },
@@ -27,10 +28,7 @@ function OptimizationStatus({ params }: { params: TradingParams }) {
     );
   }
 
-  const when = new Date(at).toLocaleString(undefined, {
-    year: "numeric", month: "short", day: "2-digit",
-    hour: "2-digit", minute: "2-digit",
-  });
+  const when = formatLocal(at);
 
   if (status === "ok") {
     return (
@@ -83,12 +81,16 @@ export default function SettingsPage() {
   const [tradingParams, setTradingParams] = useState<TradingParams | null>(null);
   const [paramsMsg, setParamsMsg] = useState("");
   const [paramsErr, setParamsErr] = useState("");
+  const [controlMode, setControlMode] = useState<ControlMode>(null);
+  const [modeMsg, setModeMsg] = useState("");
+  const [modeErr, setModeErr] = useState("");
 
   async function refreshSettings() {
     const fresh = await api.settings();
     setSettings(fresh);
     setSymbolsStr(fresh.symbols.join(", "));
     setTradingParams(fresh.trading_params);
+    setControlMode(fresh.control_mode);
     return fresh;
   }
 
@@ -145,6 +147,22 @@ export default function SettingsPage() {
       setAlpacaMsg("Credentials removed.");
     } catch (err: unknown) {
       setAlpacaErr(err instanceof Error ? err.message : "Failed");
+    }
+  }
+
+  async function saveControlMode(e: React.FormEvent) {
+    e.preventDefault();
+    setModeMsg(""); setModeErr("");
+    if (!controlMode) {
+      setModeErr("Choose Auto or Manual before trading starts.");
+      return;
+    }
+    try {
+      await api.updateControlMode(controlMode);
+      await refreshSettings();
+      setModeMsg(`Trading control mode saved: ${controlMode === "auto" ? "Auto" : "Manual"}.`);
+    } catch (err: unknown) {
+      setModeErr(err instanceof Error ? err.message : "Failed");
     }
   }
 
@@ -374,6 +392,78 @@ export default function SettingsPage() {
         </p>
       </div>
 
+      <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+        <h2 className="mb-4 text-sm font-semibold text-gray-300">Trading Control Mode</h2>
+
+        {settings && !settings.telegram.connected && (
+          <div className="mb-4 rounded-lg border border-yellow-800 bg-yellow-900/20 px-4 py-3 text-sm text-yellow-300">
+            Telegram is strongly recommended for reminders, especially in Manual mode.
+          </div>
+        )}
+
+        <form onSubmit={saveControlMode} className="space-y-3">
+          <label className={`block rounded-xl border px-4 py-3 transition-colors ${
+            controlMode === "auto"
+              ? "border-green-700 bg-green-900/20"
+              : "border-gray-800 bg-gray-950/40 hover:border-gray-700"
+          }`}>
+            <div className="flex items-start gap-3">
+              <input
+                type="radio"
+                name="control_mode"
+                value="auto"
+                checked={controlMode === "auto"}
+                onChange={() => setControlMode("auto")}
+                className="mt-1"
+              />
+              <div>
+                <p className="text-sm font-semibold text-gray-100">🤖 Auto (Managed)</p>
+                <p className="mt-1 text-sm text-gray-400">
+                  New signals start approved. The system will execute them unless you STOP them before the session cutoff.
+                </p>
+              </div>
+            </div>
+          </label>
+
+          <label className={`block rounded-xl border px-4 py-3 transition-colors ${
+            controlMode === "manual"
+              ? "border-indigo-700 bg-indigo-900/20"
+              : "border-gray-800 bg-gray-950/40 hover:border-gray-700"
+          }`}>
+            <div className="flex items-start gap-3">
+              <input
+                type="radio"
+                name="control_mode"
+                value="manual"
+                checked={controlMode === "manual"}
+                onChange={() => setControlMode("manual")}
+                className="mt-1"
+              />
+              <div>
+                <p className="text-sm font-semibold text-gray-100">👤 Manual (Assisted)</p>
+                <p className="mt-1 text-sm text-gray-400">
+                  New signals start pending. Only the symbols you APPROVE will execute or close.
+                </p>
+              </div>
+            </div>
+          </label>
+
+          <div className="rounded-lg border border-gray-800 bg-gray-950/40 px-4 py-3 text-sm text-gray-400">
+            Trading will not run until you choose one of these modes.
+          </div>
+
+          {modeMsg && <p className="text-sm text-green-400">{modeMsg}</p>}
+          {modeErr && <p className="text-sm text-red-400">{modeErr}</p>}
+
+          <button
+            type="submit"
+            className="w-full rounded-lg bg-indigo-600 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors"
+          >
+            Save Control Mode
+          </button>
+        </form>
+      </div>
+
       {/* Telegram */}
       <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
         <h2 className="mb-4 text-sm font-semibold text-gray-300">Telegram Notifications</h2>
@@ -438,7 +528,7 @@ export default function SettingsPage() {
                 <p className="mt-1 font-mono text-lg text-indigo-200">{settings.telegram.pending_code}</p>
                 {settings.telegram.pending_expires_at && (
                   <p className="mt-1 text-xs text-indigo-300/80">
-                    Expires {new Date(settings.telegram.pending_expires_at).toLocaleString()}
+                    Expires {formatLocal(settings.telegram.pending_expires_at)}
                   </p>
                 )}
               </div>

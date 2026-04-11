@@ -19,6 +19,15 @@ _BOT_USERNAME_CACHE_AT: Optional[datetime] = None
 _BOT_USERNAME_CACHE_TTL = timedelta(minutes=30)
 
 
+def _app_url() -> str:
+    """Best-effort frontend URL included in reminder messages."""
+    for key in ("APP_URL", "FRONTEND_URL", "PUBLIC_APP_URL"):
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    return "http://localhost:5173"
+
+
 def get_bot_token() -> Optional[str]:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     return token or None
@@ -212,6 +221,113 @@ def _format_fill_message(
     lines.append(f"Session: {session}")
     lines.append(f"Time (UTC): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
     return "\n".join(lines)
+
+
+def _mode_label(mode: str) -> str:
+    return "🤖 Auto" if mode == "auto" else "👤 Manual"
+
+
+def _format_signal_line(sig: dict) -> str:
+    confidence = float(sig.get("confidence", 0.0)) * 100
+    return f"- {sig.get('symbol', '?')}: {sig.get('signal', '?')} ({confidence:.0f}%)"
+
+
+def _format_position_line(pos: dict) -> str:
+    qty = int(pos.get("quantity", 0))
+    side = "LONG" if qty > 0 else "SHORT"
+    return f"- {pos.get('symbol', '?')}: {side} {abs(qty)}"
+
+
+def _join_or_none(lines: list[str], empty_text: str) -> list[str]:
+    return lines if lines else [empty_text]
+
+
+def notify_daily_signals(
+    user_id: str,
+    signals: list[dict],
+    positions: list[dict],
+    mode: str,
+) -> bool:
+    """Send the 07:30 ET summary for today's open and close candidates."""
+    binding = db.get_telegram_binding(user_id)
+    if not binding or not is_bot_configured():
+        return False
+
+    open_lines = _join_or_none(
+        [_format_signal_line(sig) for sig in signals],
+        "- No actionable open signals today.",
+    )
+    close_lines = _join_or_none(
+        [_format_position_line(pos) for pos in positions],
+        "- No current positions to review for close.",
+    )
+
+    if mode == "auto":
+        action_line = "These will auto-execute unless you STOP them before 09:50 ET / 15:30 ET."
+    else:
+        action_line = "Please APPROVE the trades you want before 09:50 ET / 15:30 ET."
+
+    text = "\n".join(
+        [
+            f"{_mode_label(mode)} daily trading plan",
+            "",
+            "Open candidates:",
+            *open_lines,
+            "",
+            "Close candidates:",
+            *close_lines,
+            "",
+            action_line,
+            f"Open app to review: {_app_url()}",
+        ]
+    )
+
+    try:
+        send_message(binding["chat_id"], text)
+        return True
+    except Exception as exc:
+        log.warning("[TELEGRAM] daily summary failed for %s: %s", user_id, exc)
+        return False
+
+
+def notify_close_reminder(
+    user_id: str,
+    positions: list[dict],
+    mode: str,
+) -> bool:
+    """Send the 14:30 ET close-session reminder."""
+    binding = db.get_telegram_binding(user_id)
+    if not binding or not is_bot_configured():
+        return False
+
+    lines = _join_or_none(
+        [_format_position_line(pos) for pos in positions],
+        "- No positions queued for close review.",
+    )
+
+    if mode == "auto":
+        action_line = "You can STOP any of these before 15:30 ET."
+    else:
+        action_line = "You must APPROVE the positions you want closed before 15:30 ET."
+
+    text = "\n".join(
+        [
+            f"{_mode_label(mode)} close reminder",
+            "",
+            "Positions for the 15:30 ET close session:",
+            *lines,
+            "",
+            action_line,
+            f"Open app to review: {_app_url()}",
+        ]
+    )
+
+    try:
+        send_message(binding["chat_id"], text)
+        return True
+    except Exception as exc:
+        log.warning("[TELEGRAM] close reminder failed for %s: %s", user_id, exc)
+        return False
 
 
 def notify_trade_fill(

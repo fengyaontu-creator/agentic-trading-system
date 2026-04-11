@@ -3,7 +3,8 @@ services/trading_sessions.py -- Business logic for each scheduler session.
 
     analyze  -- fetch data, run LLM analysis, save signals to DB
     trade    -- read today's signals from DB, execute open orders
-    close    -- flatten all open positions for intraday users (EOD)
+    remind   -- send pre-close Telegram reminder for approved positions
+    close    -- flatten approved open positions for intraday users (EOD)
 """
 
 import json
@@ -15,7 +16,11 @@ import database as db
 from agentic_trading import TradingOrchestrator
 from broker_alpaca import reconcile_positions
 from data_tools import fetch_market_data
-from telegram_service import notify_trade_fill
+from telegram_service import (
+    notify_trade_fill,
+    notify_daily_signals,
+    notify_close_reminder,
+)
 
 log = logging.getLogger(__name__)
 
@@ -40,11 +45,35 @@ def _notify_fill_safe(**kwargs):
         log.warning("[TELEGRAM] fill notification crashed: %s", exc)
 
 
+def _notify_daily_safe(**kwargs):
+    try:
+        notify_daily_signals(**kwargs)
+    except Exception as exc:
+        log.warning("[TELEGRAM] daily signals notification crashed: %s", exc)
+
+
+def _notify_close_reminder_safe(**kwargs):
+    try:
+        notify_close_reminder(**kwargs)
+    except Exception as exc:
+        log.warning("[TELEGRAM] close reminder notification crashed: %s", exc)
+
+
 # -- Analyze session -----------------------------------------------------------
 
 def analyze_for_user(user: dict, api_key: str) -> dict:
     """Run analysis for all of a user's symbols and save signals to DB."""
     user_id = user["user_id"]
+
+    # Users who have not chosen a control mode are skipped entirely. The
+    # Settings page will force them to pick one before any session touches
+    # their account. This is the enforcement point for the "must choose mode"
+    # contract.
+    mode = db.get_control_mode(user_id)
+    if mode not in ("auto", "manual"):
+        log.info(f"[ANALYZE] {user_id} -- control_mode not set, skipping")
+        return {"user_id": user_id, "status": "skipped", "reason": "control_mode not set"}
+
     symbols = db.get_user_symbols(user_id)
     if not symbols:
         return {"user_id": user_id, "status": "skipped", "reason": "no symbols"}
@@ -52,6 +81,13 @@ def analyze_for_user(user: dict, api_key: str) -> dict:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     orchestrator = TradingOrchestrator(api_key=api_key, user_id=user_id)
     saved = 0
+
+    # Manual users need close_approved reset to 0 each morning so pre-existing
+    # positions require explicit review before the 15:30 ET close session.
+    # Auto users get reset to 1 (matches the DB default; explicit for clarity).
+    db.reset_close_approvals(user_id, default=1 if mode == "auto" else 0)
+
+    default_approved = 1 if mode == "auto" else 0
 
     for symbol in symbols:
         try:
@@ -67,13 +103,26 @@ def analyze_for_user(user: dict, api_key: str) -> dict:
                 reasoning=technical.get("reasoning", ""),
                 technical_score=float(technical.get("technical_score", 0.0)),
                 sentiment_score=float(sentiment.get("sentiment_score", 0.0)),
+                approved=default_approved,
             )
             saved += 1
             log.info(f"[ANALYZE] {user_id}/{symbol} -> {technical.get('signal')} ({technical.get('confidence', 0):.0%})")
         except Exception as exc:
             log.error(f"[ANALYZE] {user_id}/{symbol} failed: {exc}", exc_info=True)
 
-    return {"user_id": user_id, "status": "ok", "signals_saved": saved}
+    # Fire the first daily reminder (07:30 ET). Best-effort: telegram failures
+    # must not block analysis results from being persisted.
+    today_signals = db.get_signals(user_id, date=today)
+    actionable_signals = [s for s in today_signals if s["signal"] in ("BUY", "SELL")]
+    positions = db.load_positions(user_id)
+    _notify_daily_safe(
+        user_id=user_id,
+        mode=mode,
+        signals=actionable_signals,
+        positions=positions,
+    )
+
+    return {"user_id": user_id, "status": "ok", "signals_saved": saved, "mode": mode}
 
 
 # -- Trade session -------------------------------------------------------------
@@ -81,6 +130,11 @@ def analyze_for_user(user: dict, api_key: str) -> dict:
 def trade_for_user(user: dict, api_key: str) -> dict:
     """Read today's pending signals from DB and execute trades."""
     user_id = user["user_id"]
+
+    mode = db.get_control_mode(user_id)
+    if mode not in ("auto", "manual"):
+        log.info(f"[TRADE] {user_id} -- control_mode not set, skipping")
+        return {"user_id": user_id, "status": "skipped", "reason": "control_mode not set"}
 
     if not is_market_open():
         log.info(f"[TRADE] {user_id} -- market closed, skipping")
@@ -155,6 +209,11 @@ def trade_for_user(user: dict, api_key: str) -> dict:
                     symbol, sig["signal"], quantity, filled_price, order.get("order_id"),
                 )
                 db.mark_signal_executed(user_id, symbol, today)
+                # Manual users must also re-approve the 15:30 ET close. A new
+                # position they just opened defaults to close_approved=0 so they
+                # explicitly control end-of-day flatten per symbol.
+                if mode == "manual" and not is_closing_trade:
+                    db.set_position_close_approval(user_id, symbol, False)
                 _notify_fill_safe(
                     user_id=user_id,
                     session="trade",
@@ -180,16 +239,52 @@ def trade_for_user(user: dict, api_key: str) -> dict:
     return {"user_id": user_id, "status": "ok", "trades": trades}
 
 
+# -- Remind session -----------------------------------------------------------
+
+def remind_for_user(user: dict, api_key: str) -> dict:
+    """Send the 14:30 ET close reminder without mutating trading state."""
+    del api_key  # Unused, kept for scheduler signature consistency.
+
+    user_id = user["user_id"]
+    mode = db.get_control_mode(user_id)
+    if mode not in ("auto", "manual"):
+        log.info(f"[REMIND] {user_id} -- control_mode not set, skipping")
+        return {"user_id": user_id, "status": "skipped", "reason": "control_mode not set"}
+
+    settings = db.load_user_settings(user_id)
+    strategy = settings.get("strategy")
+    if strategy != "intraday":
+        log.info(f"[REMIND] {user_id} -- strategy={strategy!r}, skipping")
+        return {"user_id": user_id, "status": "skipped", "reason": f"strategy={strategy!r} not 'intraday'"}
+
+    positions = db.load_positions(user_id)
+    if not positions:
+        log.info(f"[REMIND] {user_id} -- no open positions")
+        return {"user_id": user_id, "status": "ok", "reminded": False, "positions": 0}
+
+    _notify_close_reminder_safe(
+        user_id=user_id,
+        mode=mode,
+        positions=positions,
+    )
+    return {"user_id": user_id, "status": "ok", "reminded": True, "positions": len(positions)}
+
+
 # -- Close session (EOD flatten) ----------------------------------------------
 
 def close_for_user(user: dict, api_key: str) -> dict:
-    """Close all open positions for intraday users at end of day."""
+    """Close approved open positions for intraday users at end of day."""
     user_id = user["user_id"]
 
     now_et = datetime.now(ET)
     if now_et.weekday() >= 5:
         log.info(f"[CLOSE] {user_id} -- weekend, skipping")
         return {"user_id": user_id, "status": "ok", "trades": 0}
+
+    mode = db.get_control_mode(user_id)
+    if mode not in ("auto", "manual"):
+        log.info(f"[CLOSE] {user_id} -- control_mode not set, skipping")
+        return {"user_id": user_id, "status": "skipped", "reason": "control_mode not set"}
 
     settings = db.load_user_settings(user_id)
     strategy = settings.get("strategy")
@@ -209,9 +304,9 @@ def close_for_user(user: dict, api_key: str) -> dict:
     if not creds:
         return {"user_id": user_id, "status": "skipped", "reason": "no alpaca credentials"}
 
-    positions = db.load_positions(user_id)
+    positions = db.load_positions_for_close(user_id)
     if not positions:
-        log.info(f"[CLOSE] {user_id} -- no open positions")
+        log.info(f"[CLOSE] {user_id} -- no approved positions to close")
         return {"user_id": user_id, "status": "ok", "trades": 0}
 
     orchestrator = TradingOrchestrator(api_key=api_key, user_id=user_id)

@@ -11,7 +11,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { api, DashboardData } from "../api";
+import { api, ControlMode, DashboardData } from "../api";
+import { parseTimestamp } from "../utils/time";
 
 const COLORS = ["#6366f1", "#22d3ee", "#f59e0b", "#10b981", "#f43f5e", "#a78bfa"];
 
@@ -31,6 +32,7 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [savingSymbol, setSavingSymbol] = useState<string | null>(null);
 
   useEffect(() => {
     api.dashboard()
@@ -39,18 +41,47 @@ export default function DashboardPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  async function toggleCloseApproval(symbol: string, currentApproved: boolean) {
+    setSavingSymbol(symbol);
+    try {
+      await api.updatePositionCloseApproval(symbol, !currentApproved);
+      setData((prev) => prev ? {
+        ...prev,
+        positions: prev.positions.map((position) =>
+          position.symbol === symbol
+            ? { ...position, close_approved: !currentApproved }
+            : position
+        ),
+      } : prev);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update close approval");
+    } finally {
+      setSavingSymbol(null);
+    }
+  }
+
   if (loading) return <p className="text-gray-500">Loading...</p>;
   if (error) return <p className="text-red-400">{error}</p>;
 
-  const { portfolio, positions, recent_trades } = data!;
+  const { portfolio, positions, recent_trades, control_mode, strategy } = data!;
+  const controlMode: ControlMode = control_mode;
+  const showCloseAction = strategy === "intraday";
 
   if (!portfolio) {
     return (
-      <div className="flex flex-col items-center justify-center py-24 text-center">
-        <p className="text-lg font-medium text-gray-300">No portfolio data yet</p>
-        <p className="mt-1 text-sm text-gray-500">
-          Add your Alpaca credentials in Settings to get started.
-        </p>
+      <div className="space-y-6">
+        <h1 className="text-xl font-bold text-gray-100">Dashboard</h1>
+        {controlMode === null && (
+          <div className="rounded-xl border border-yellow-800 bg-yellow-900/20 px-5 py-4 text-sm text-yellow-300">
+            Please choose a control mode in Settings before trading starts.
+          </div>
+        )}
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <p className="text-lg font-medium text-gray-300">No portfolio data yet</p>
+          <p className="mt-1 text-sm text-gray-500">
+            Add your Alpaca credentials in Settings to get started.
+          </p>
+        </div>
       </div>
     );
   }
@@ -69,7 +100,7 @@ export default function DashboardPage() {
 
   // Scatter chart data - convert timestamp to epoch ms for recharts
   const tradePoints = recent_trades.map((t) => ({
-    x: new Date(t.timestamp).getTime(),
+    x: parseTimestamp(t.timestamp).getTime(),
     y: t.price,
     side: t.side,
     symbol: t.symbol,
@@ -79,6 +110,12 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold text-gray-100">Dashboard</h1>
+
+      {controlMode === null && (
+        <div className="rounded-xl border border-yellow-800 bg-yellow-900/20 px-5 py-4 text-sm text-yellow-300">
+          Please choose a control mode in Settings before trading starts.
+        </div>
+      )}
 
       {/* KPI row */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -109,6 +146,7 @@ export default function DashboardPage() {
                   <th className="pb-2 text-right">Entry</th>
                   <th className="pb-2 text-right">Current</th>
                   <th className="pb-2 text-right">Unr. P&L</th>
+                  {showCloseAction && <th className="pb-2 text-right">Close Action</th>}
                 </tr>
               </thead>
               <tbody>
@@ -123,6 +161,30 @@ export default function DashboardPage() {
                       <td className={`py-2 text-right font-medium ${unr >= 0 ? "text-green-400" : "text-red-400"}`}>
                         {unr >= 0 ? "+" : ""}${unr.toFixed(2)}
                       </td>
+                      {showCloseAction && (
+                        <td className="py-2 text-right">
+                          <button
+                            type="button"
+                            disabled={savingSymbol === p.symbol || controlMode === null}
+                            onClick={() => toggleCloseApproval(p.symbol, Boolean(p.close_approved))}
+                            className={
+                              controlMode === "auto"
+                                ? (Boolean(p.close_approved)
+                                    ? "rounded-lg border border-green-700 bg-green-900/30 px-3 py-1.5 text-xs font-semibold text-green-300"
+                                    : "rounded-lg border border-red-700 bg-red-900/30 px-3 py-1.5 text-xs font-semibold text-red-300")
+                                : (Boolean(p.close_approved)
+                                    ? "rounded-lg border border-green-700 bg-green-900/30 px-3 py-1.5 text-xs font-semibold text-green-300"
+                                    : "rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs font-semibold text-gray-300")
+                            }
+                          >
+                            {savingSymbol === p.symbol
+                              ? "Saving..."
+                              : controlMode === "auto"
+                                ? (Boolean(p.close_approved) ? "Approved" : "Stopped")
+                                : (Boolean(p.close_approved) ? "Approved" : "Pending")}
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

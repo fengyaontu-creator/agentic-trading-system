@@ -12,13 +12,18 @@ Sections:
 import sqlite3
 import os
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from cryptography.fernet import Fernet
 
 
 DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "trading.db"))
+
+
+def _utc_now_iso() -> str:
+    """Return an ISO timestamp using an aware UTC datetime."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _get_fernet() -> Fernet:
@@ -204,6 +209,33 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN telegram_bind_expires_at TEXT")
         except Exception:
             pass
+        try:
+            conn.execute("ALTER TABLE user_settings ADD COLUMN control_mode TEXT")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE signals ADD COLUMN approved INTEGER NOT NULL DEFAULT 1")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE signals ADD COLUMN approved_at TEXT")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE positions ADD COLUMN close_approved INTEGER NOT NULL DEFAULT 1")
+        except Exception:
+            pass
+        # One-time backfill: existing users with Alpaca credentials get
+        # control_mode='auto' so their behavior is unchanged. Users without
+        # credentials stay NULL so the UI will prompt them to pick a mode.
+        conn.execute(
+            """UPDATE user_settings
+               SET control_mode = 'auto'
+               WHERE control_mode IS NULL
+                 AND user_id IN (
+                   SELECT user_id FROM users WHERE alpaca_key_enc IS NOT NULL
+                 )"""
+        )
 
 
 # =============================================================================
@@ -242,14 +274,14 @@ def create_user(user_id: str, username: str, password: str = "") -> Dict:
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO users (user_id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
-            (user_id, username, _hash_password(password), datetime.utcnow().isoformat()),
+            (user_id, username, _hash_password(password), _utc_now_iso()),
         )
         # Init portfolio with $100k if not exists
         conn.execute(
             """INSERT OR IGNORE INTO portfolio_state
                (user_id, cash, portfolio_value, total_trades, updated_at)
                VALUES (?, 100000.0, 100000.0, 0, ?)""",
-            (user_id, datetime.utcnow().isoformat()),
+            (user_id, _utc_now_iso()),
         )
         # Init default trading params if not exists
         conn.execute(
@@ -259,7 +291,7 @@ def create_user(user_id: str, username: str, password: str = "") -> Dict:
                 trailing_stop_low_profit, trailing_stop_cushion, trailing_stop_lock_pct,
                 strategy, risk_preference, updated_at)
                VALUES (?, 0.02, 0.10, 2.0, 0.05, 0.3, 0.10, 0.05, 0.03, 0.02, 'intraday', 'moderate', ?)""",
-            (user_id, datetime.utcnow().isoformat()),
+            (user_id, _utc_now_iso()),
         )
     return get_user(user_id)
 
@@ -464,6 +496,7 @@ def load_user_settings(user_id: str) -> Dict:
     if not row:
         out = dict(_SETTINGS_DEFAULTS)
         out.update({col: None for col in _OPTIMIZATION_META_COLS})
+        out["control_mode"] = None
         return out
     out = {col: row[col] for col in _SETTINGS_COLS}
     for col in _OPTIMIZATION_META_COLS:
@@ -471,7 +504,31 @@ def load_user_settings(user_id: str) -> Dict:
             out[col] = row[col]
         except (IndexError, KeyError):
             out[col] = None
+    try:
+        out["control_mode"] = row["control_mode"]
+    except (IndexError, KeyError):
+        out["control_mode"] = None
     return out
+
+
+def get_control_mode(user_id: str) -> Optional[str]:
+    """Return 'auto', 'manual', or None if the user has not chosen yet."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT control_mode FROM user_settings WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    return row["control_mode"] if row else None
+
+
+def set_control_mode(user_id: str, mode: Optional[str]):
+    """Set the user's control mode ('auto' / 'manual' / None)."""
+    if mode not in (None, "auto", "manual"):
+        raise ValueError(f"set_control_mode: invalid mode {mode!r}")
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE user_settings SET control_mode = ?, updated_at = ? WHERE user_id = ?",
+            (mode, _utc_now_iso(), user_id),
+        )
 
 
 def set_param_optimization_status(
@@ -491,7 +548,7 @@ def set_param_optimization_status(
                    last_param_update_status = ?,
                    last_param_update_reason = ?
                WHERE user_id = ?""",
-            (datetime.utcnow().isoformat(), status, reason, user_id),
+            (_utc_now_iso(), status, reason, user_id),
         )
 
 
@@ -539,7 +596,7 @@ def save_user_settings(user_id: str, **kwargs):
                    strategy             = excluded.strategy,
                    risk_preference      = excluded.risk_preference,
                    updated_at           = excluded.updated_at""",
-            (user_id, *[values[c] for c in _SETTINGS_COLS], datetime.utcnow().isoformat()),
+            (user_id, *[values[c] for c in _SETTINGS_COLS], _utc_now_iso()),
         )
 
 
@@ -550,7 +607,7 @@ def set_user_symbols(user_id: str, symbols: List[str]):
         conn.execute("DELETE FROM user_symbols WHERE user_id = ?", (user_id,))
         conn.executemany(
             "INSERT OR IGNORE INTO user_symbols (user_id, symbol, added_at) VALUES (?, ?, ?)",
-            [(user_id, s, datetime.utcnow().isoformat()) for s in symbols],
+            [(user_id, s, _utc_now_iso()) for s in symbols],
         )
 
 
@@ -577,7 +634,7 @@ def save_portfolio(user_id: str, cash: float, portfolio_value: float, total_trad
                    portfolio_value = excluded.portfolio_value,
                    total_trades = excluded.total_trades,
                    updated_at = excluded.updated_at""",
-            (user_id, cash, portfolio_value, total_trades, datetime.utcnow().isoformat()),
+            (user_id, cash, portfolio_value, total_trades, _utc_now_iso()),
         )
 
 
@@ -617,6 +674,39 @@ def load_positions(user_id: str) -> List[Dict]:
         return [dict(r) for r in rows]
 
 
+def set_position_close_approval(user_id: str, symbol: str, approved: bool) -> bool:
+    """Toggle a position's close_approved flag. Returns True if updated."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE positions SET close_approved = ? WHERE user_id = ? AND symbol = ?",
+            (1 if approved else 0, user_id, symbol),
+        )
+        return cur.rowcount > 0
+
+
+def reset_close_approvals(user_id: str, default: int):
+    """Reset close_approved for every position of a user to the given default.
+
+    Called by the analyze session once per day so the 15:30 ET close session
+    starts from a known state. default=1 for auto users, 0 for manual users.
+    """
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE positions SET close_approved = ? WHERE user_id = ?",
+            (default, user_id),
+        )
+
+
+def load_positions_for_close(user_id: str) -> List[Dict]:
+    """Positions the close session should actually flatten (close_approved=1)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM positions WHERE user_id = ? AND close_approved = 1",
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 # =============================================================================
 # Trades & signals
 # =============================================================================
@@ -625,7 +715,7 @@ def record_trade(user_id: str, symbol: str, side: str, quantity: int, price: flo
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO trades (user_id, symbol, side, quantity, price, timestamp, order_id) VALUES (?,?,?,?,?,?,?)",
-            (user_id, symbol, side, quantity, price, datetime.utcnow().isoformat(), order_id),
+            (user_id, symbol, side, quantity, price, _utc_now_iso(), order_id),
         )
 
 
@@ -647,13 +737,21 @@ def save_signal(
     reasoning: str = None,
     technical_score: float = None,
     sentiment_score: float = None,
+    approved: int = 1,
 ):
-    """Save or update today's analysis signal for a user/symbol."""
+    """Save or update today's analysis signal for a user/symbol.
+
+    approved: default 1 (auto mode). Callers pass 0 for manual-mode users so
+    the signal will not execute unless the user approves it from the UI.
+    On conflict (re-running analyze same day), approval state is NOT touched —
+    if the user already clicked approve/stop, re-running analyze should not
+    overwrite their choice.
+    """
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO signals
-               (user_id, symbol, date, signal, confidence, reasoning, technical_score, sentiment_score, executed, created_at)
-               VALUES (?,?,?,?,?,?,?,?,0,?)
+               (user_id, symbol, date, signal, confidence, reasoning, technical_score, sentiment_score, executed, approved, created_at)
+               VALUES (?,?,?,?,?,?,?,?,0,?,?)
                ON CONFLICT(user_id, symbol, date) DO UPDATE SET
                    signal = excluded.signal,
                    confidence = excluded.confidence,
@@ -661,8 +759,19 @@ def save_signal(
                    technical_score = excluded.technical_score,
                    sentiment_score = excluded.sentiment_score,
                    created_at = excluded.created_at""",
-            (user_id, symbol, date, signal, confidence, reasoning, technical_score, sentiment_score, datetime.utcnow().isoformat()),
+            (user_id, symbol, date, signal, confidence, reasoning, technical_score, sentiment_score, approved, _utc_now_iso()),
         )
+
+
+def set_signal_approval(user_id: str, symbol: str, date: str, approved: bool) -> bool:
+    """Toggle a signal's approval state. Returns True if a row was updated."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """UPDATE signals SET approved = ?, approved_at = ?
+               WHERE user_id = ? AND symbol = ? AND date = ? AND executed = 0""",
+            (1 if approved else 0, _utc_now_iso(), user_id, symbol, date),
+        )
+        return cur.rowcount > 0
 
 
 def mark_signal_executed(user_id: str, symbol: str, date: str):
@@ -691,11 +800,17 @@ def get_signals(user_id: str, date: str = None, limit: int = 50) -> List[Dict]:
 
 
 def get_pending_signals(user_id: str, date: str) -> List[Dict]:
-    """Get unexecuted BUY/SELL signals for today."""
+    """Get unexecuted, approved BUY/SELL signals for today.
+
+    Only returns signals where approved=1. In auto mode new signals default to
+    approved=1 (behavior unchanged); in manual mode they default to 0 and the
+    user must flip the flag via the UI before this query picks them up.
+    """
     with get_conn() as conn:
         rows = conn.execute(
             """SELECT * FROM signals
-               WHERE user_id = ? AND date = ? AND executed = 0 AND signal != 'HOLD'
+               WHERE user_id = ? AND date = ? AND executed = 0
+                 AND approved = 1 AND signal != 'HOLD'
                ORDER BY confidence DESC""",
             (user_id, date),
         ).fetchall()

@@ -7,11 +7,25 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import json
+import datetime as _stdlib_datetime
 import pytest
 from unittest.mock import patch, MagicMock
+from zoneinfo import ZoneInfo
 
 import scheduler
 from services import trading_sessions
+
+
+ET = ZoneInfo("America/New_York")
+_FIXED_ET = _stdlib_datetime.datetime(2026, 4, 7, 11, 0, tzinfo=ET)
+
+
+class _FrozenDatetime(_stdlib_datetime.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        if tz is None:
+            return _FIXED_ET.replace(tzinfo=None)
+        return _FIXED_ET.astimezone(tz)
 
 
 # ---------------------------------------------------------------------------
@@ -20,10 +34,12 @@ from services import trading_sessions
 
 @patch("services.trading_sessions.db")
 def test_close_skips_swing_user(mock_db):
+    mock_db.get_control_mode.return_value = "auto"
     mock_db.load_user_settings.return_value = {"strategy": "swing"}
-    result = trading_sessions.close_for_user({"user_id": "u1"}, "fake-key")
+    with patch.object(trading_sessions, "datetime", _FrozenDatetime):
+        result = trading_sessions.close_for_user({"user_id": "u1"}, "fake-key")
     assert result["trades"] == 0
-    mock_db.load_positions.assert_not_called()
+    mock_db.load_positions_for_close.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -34,9 +50,10 @@ def test_close_skips_swing_user(mock_db):
 @patch("services.trading_sessions.fetch_market_data")
 @patch("services.trading_sessions.db")
 def test_close_flattens_intraday(mock_db, mock_fetch, mock_orch_cls):
+    mock_db.get_control_mode.return_value = "auto"
     mock_db.load_user_settings.return_value = {"strategy": "intraday"}
     mock_db.get_alpaca_credentials.return_value = {"api_key": "k", "api_secret": "s"}
-    mock_db.load_positions.return_value = [
+    mock_db.load_positions_for_close.return_value = [
         {"symbol": "AAPL", "quantity": 10},
         {"symbol": "TSLA", "quantity": -5},
     ]
@@ -49,7 +66,8 @@ def test_close_flattens_intraday(mock_db, mock_fetch, mock_orch_cls):
     }
     mock_orch_cls.return_value = mock_orch
 
-    result = trading_sessions.close_for_user({"user_id": "u1"}, "fake-key")
+    with patch.object(trading_sessions, "datetime", _FrozenDatetime):
+        result = trading_sessions.close_for_user({"user_id": "u1"}, "fake-key")
 
     assert result["trades"] == 2
     # AAPL long -> SELL, TSLA short -> BUY
@@ -66,9 +84,11 @@ def test_close_flattens_intraday(mock_db, mock_fetch, mock_orch_cls):
 
 @patch("services.trading_sessions.db")
 def test_close_skips_no_creds(mock_db):
+    mock_db.get_control_mode.return_value = "auto"
     mock_db.load_user_settings.return_value = {"strategy": "intraday"}
     mock_db.get_alpaca_credentials.return_value = None
-    result = trading_sessions.close_for_user({"user_id": "u1"}, "fake-key")
+    with patch.object(trading_sessions, "datetime", _FrozenDatetime):
+        result = trading_sessions.close_for_user({"user_id": "u1"}, "fake-key")
     assert result["status"] == "skipped"
 
 
@@ -79,6 +99,7 @@ def test_close_skips_no_creds(mock_db):
 @patch("services.trading_sessions.is_market_open", return_value=False)
 @patch("services.trading_sessions.db")
 def test_trade_skips_market_closed(mock_db, mock_mkt):
+    mock_db.get_control_mode.return_value = "auto"
     result = trading_sessions.trade_for_user({"user_id": "u1"}, "fake-key")
     assert result["trades"] == 0
     mock_db.get_alpaca_credentials.assert_not_called()
@@ -91,6 +112,17 @@ def test_trade_skips_market_closed(mock_db, mock_mkt):
 def test_scheduler_trade_does_not_require_openrouter(mock_getenv, mock_db, mock_log):
     mock_db.list_users.return_value = [{"user_id": "u1"}]
     scheduler.run_all_users("trade", max_workers=1)
+    mock_db.init_db.assert_called_once()
+    mock_log.error.assert_not_called()
+
+
+@patch("scheduler.log")
+@patch("scheduler._SESSION_FN", {"remind": MagicMock(return_value={"status": "ok"})})
+@patch("scheduler.db")
+@patch("scheduler.os.getenv", return_value=None)
+def test_scheduler_remind_does_not_require_openrouter(mock_getenv, mock_db, mock_log):
+    mock_db.list_users.return_value = [{"user_id": "u1"}]
+    scheduler.run_all_users("remind", max_workers=1)
     mock_db.init_db.assert_called_once()
     mock_log.error.assert_not_called()
 
@@ -113,3 +145,17 @@ def test_scheduler_collects_worker_errors(mock_getenv, mock_db, mock_log):
     mock_db.list_users.return_value = [{"user_id": "u1"}]
     scheduler.run_all_users("trade", max_workers=1)
     assert any("failed: boom" in str(call.args[0]) for call in mock_log.error.call_args_list)
+
+
+@patch("services.trading_sessions.notify_close_reminder")
+@patch("services.trading_sessions.db")
+def test_remind_session_sends_for_intraday_positions(mock_db, mock_notify):
+    mock_db.get_control_mode.return_value = "manual"
+    mock_db.load_user_settings.return_value = {"strategy": "intraday"}
+    mock_db.load_positions.return_value = [{"symbol": "AAPL", "quantity": 10}]
+
+    result = trading_sessions.remind_for_user({"user_id": "u1"}, "unused")
+
+    assert result["status"] == "ok"
+    assert result["reminded"] is True
+    mock_notify.assert_called_once()

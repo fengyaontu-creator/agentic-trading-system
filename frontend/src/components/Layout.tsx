@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { localTimeForET } from "../utils/time";
 
 const nav = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -26,6 +27,7 @@ export default function Layout() {
   const username = localStorage.getItem("username") ?? "User";
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const analysisLocal = localTimeForET(7, 30);
 
   function logout() {
     localStorage.removeItem("token");
@@ -115,7 +117,7 @@ export default function Layout() {
               </div>
               <div className="mb-2 flex items-center gap-1.5 text-xs text-gray-500">
                 <Clock className="h-3 w-3 flex-shrink-0" />
-                <span>Analysis 07:30 ET</span>
+                <span>{`Analysis 07:30 ET (${analysisLocal} local)`}</span>
               </div>
             </>
           )}

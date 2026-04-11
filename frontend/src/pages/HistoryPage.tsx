@@ -12,23 +12,7 @@ import {
 } from "recharts";
 import { ArrowLeft, TrendingDown, TrendingUp } from "lucide-react";
 import { api, Trade } from "../api";
-
-// --- Timezone helper ---------------------------------------------------------
-
-function toET(ts: string): string {
-  // Timestamps are stored as UTC without "Z"; append it so JS parses correctly.
-  const utc = ts.endsWith("Z") ? ts : ts + "Z";
-  return new Date(utc).toLocaleString("en-US", {
-    timeZone: "America/New_York",
-    month: "numeric",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }) + " ET";
-}
+import { formatLocal } from "../utils/time";
 
 // --- P&L helpers -------------------------------------------------------------
 
@@ -227,7 +211,7 @@ export default function HistoryPage() {
               {selectedDetails.map((t, i) => (
                 <tr key={i} className="border-b border-gray-800/50 hover:bg-gray-800/30">
                   <td className="px-4 py-2.5 text-gray-500 text-xs whitespace-nowrap">
-                    {toET(t.timestamp)}
+                    {formatLocal(t.timestamp)}
                   </td>
                   <td className="px-4 py-2.5">
                     <span className={`rounded px-2 py-0.5 text-xs font-bold ${
@@ -305,7 +289,7 @@ export default function HistoryPage() {
             {trades.map((t, i) => (
               <tr key={i} className="border-b border-gray-800/50 hover:bg-gray-800/30">
                 <td className="px-4 py-2.5 text-gray-500 text-xs">
-                  {toET(t.timestamp)}
+                  {formatLocal(t.timestamp)}
                 </td>
                 <td className="px-4 py-2.5">
                   <button

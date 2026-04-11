@@ -105,6 +105,7 @@ def test_user(isolated_db):
     db = isolated_db
     uid = "alice"
     db.create_user(uid, "alice", "pw")
+    db.set_control_mode(uid, "auto")
     db.set_user_symbols(uid, ["AAPL"])
     db.save_user_settings(
         uid,
@@ -277,6 +278,7 @@ def test_trade_skips_user_without_credentials(isolated_db):
     db = isolated_db
     uid = "bob"
     db.create_user(uid, "bob", "pw")
+    db.set_control_mode(uid, "auto")
     db.set_user_symbols(uid, ["TSLA"])
     db.save_signal(uid, "TSLA", _FIXED_DATE_STR, "BUY", 0.6,
                    reasoning="test", technical_score=0.5, sentiment_score=0.1)
@@ -296,6 +298,7 @@ def test_trade_notification_failure_does_not_block_execution(isolated_db, test_u
     """Telegram notification failures must not prevent the trade from completing."""
     db = isolated_db
     uid = test_user
+    db.set_control_mode(uid, "auto")
     db.save_signal(uid, "AAPL", _FIXED_DATE_STR, "BUY", 0.6,
                    reasoning="test", technical_score=0.5, sentiment_score=0.1)
 

@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, Signal, SignalsData } from "../api";
+import { api, ControlMode, Signal, SignalsData } from "../api";
 
 const signalStyle: Record<string, string> = {
   BUY:  "bg-green-900/40 text-green-400 border-green-800",
@@ -8,11 +8,49 @@ const signalStyle: Record<string, string> = {
   HOLD: "bg-yellow-900/40 text-yellow-400 border-yellow-800",
 };
 
-function SignalCard({ sig }: { sig: Signal }) {
+function approvalButton(mode: ControlMode, approved: boolean) {
+  if (mode === "auto") {
+    return approved
+      ? "rounded-lg border border-green-700 bg-green-900/30 px-3 py-1.5 text-xs font-semibold text-green-300"
+      : "rounded-lg border border-red-700 bg-red-900/30 px-3 py-1.5 text-xs font-semibold text-red-300";
+  }
+  return approved
+    ? "rounded-lg border border-green-700 bg-green-900/30 px-3 py-1.5 text-xs font-semibold text-green-300"
+    : "rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs font-semibold text-gray-300";
+}
+
+
+function approvalLabel(mode: ControlMode, approved: boolean) {
+  if (mode === "auto") return approved ? "Approved" : "Stopped";
+  return approved ? "Approved" : "Pending";
+}
+
+
+function SignalCard({
+  sig,
+  mode,
+  onToggleApproval,
+  busy,
+}: {
+  sig: Signal;
+  mode: ControlMode;
+  onToggleApproval: (sig: Signal) => void;
+  busy: boolean;
+}) {
   const [open, setOpen] = useState(false);
+  const actionable = !sig.executed && sig.signal !== "HOLD" && mode !== null;
+  const approved = Boolean(sig.approved);
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900 overflow-hidden">
-      <button
+      <div
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setOpen(!open);
+          }
+        }}
         onClick={() => setOpen(!open)}
         className="flex w-full items-center justify-between px-5 py-4 text-left"
       >
@@ -30,8 +68,23 @@ function SignalCard({ sig }: { sig: Signal }) {
             </span>
           )}
         </div>
-        {open ? <ChevronUp className="h-4 w-4 text-gray-500" /> : <ChevronDown className="h-4 w-4 text-gray-500" />}
-      </button>
+        <div className="flex items-center gap-3">
+          {actionable && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleApproval(sig);
+              }}
+              className={approvalButton(mode, approved)}
+            >
+              {busy ? "Saving..." : approvalLabel(mode, approved)}
+            </button>
+          )}
+          {open ? <ChevronUp className="h-4 w-4 text-gray-500" /> : <ChevronDown className="h-4 w-4 text-gray-500" />}
+        </div>
+      </div>
       {open && (
         <div className="border-t border-gray-800 px-5 py-4 space-y-3">
           <div className="grid grid-cols-2 gap-4">
@@ -55,15 +108,38 @@ function SignalCard({ sig }: { sig: Signal }) {
 
 export default function SignalsPage() {
   const [data, setData] = useState<SignalsData | null>(null);
+  const [mode, setMode] = useState<ControlMode>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [savingSymbol, setSavingSymbol] = useState<string | null>(null);
 
   useEffect(() => {
-    api.signals()
-      .then(setData)
+    Promise.all([api.signals(), api.getControlMode()])
+      .then(([signalsData, controlMode]) => {
+        setData(signalsData);
+        setMode(controlMode.mode);
+      })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
+
+  async function toggleApproval(sig: Signal) {
+    const nextApproved = !Boolean(sig.approved);
+    setSavingSymbol(sig.symbol);
+    try {
+      await api.updateSignalApproval(sig.symbol, nextApproved);
+      setData((prev) => prev ? {
+        ...prev,
+        today: prev.today.map((item) =>
+          item.symbol === sig.symbol ? { ...item, approved: nextApproved } : item
+        ),
+      } : prev);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update approval");
+    } finally {
+      setSavingSymbol(null);
+    }
+  }
 
   if (loading) return <p className="text-gray-500">Loading...</p>;
   if (error) return <p className="text-red-400">{error}</p>;
@@ -73,6 +149,12 @@ export default function SignalsPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold text-gray-100">Signals</h1>
+
+      {mode === null && (
+        <div className="rounded-xl border border-yellow-800 bg-yellow-900/20 px-5 py-4 text-sm text-yellow-300">
+          Please choose a control mode in Settings before trading starts.
+        </div>
+      )}
 
       {/* Today */}
       <section>
@@ -85,7 +167,15 @@ export default function SignalsPage() {
           </div>
         ) : (
           <div className="space-y-2">
-            {today.map((sig, i) => <SignalCard key={i} sig={sig} />)}
+            {today.map((sig, i) => (
+              <SignalCard
+                key={i}
+                sig={sig}
+                mode={mode}
+                onToggleApproval={toggleApproval}
+                busy={savingSymbol === sig.symbol}
+              />
+            ))}
           </div>
         )}
       </section>
@@ -102,6 +192,7 @@ export default function SignalsPage() {
                   <th className="px-4 py-3 text-left">Symbol</th>
                   <th className="px-4 py-3 text-left">Signal</th>
                   <th className="px-4 py-3 text-right">Confidence</th>
+                  <th className="px-4 py-3 text-right">Approval</th>
                   <th className="px-4 py-3 text-right">Executed</th>
                 </tr>
               </thead>
@@ -117,6 +208,11 @@ export default function SignalsPage() {
                     </td>
                     <td className="px-4 py-2.5 text-right text-gray-300">
                       {(sig.confidence * 100).toFixed(0)}%
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <span className={Boolean(sig.approved) ? "text-green-400" : "text-gray-500"}>
+                        {sig.signal === "HOLD" ? "N/A" : Boolean(sig.approved) ? "Approved" : "Pending/Stopped"}
+                      </span>
                     </td>
                     <td className="px-4 py-2.5 text-right">
                       {sig.executed

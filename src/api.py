@@ -107,6 +107,14 @@ class TradingParamsReq(BaseModel):
     risk_preference: Literal["conservative", "moderate", "aggressive"] = "moderate"
 
 
+class ControlModeReq(BaseModel):
+    mode: Literal["auto", "manual"]
+
+
+class ApprovalReq(BaseModel):
+    approved: bool
+
+
 # --Auth -----------------------------------------------------------------------
 
 @app.post("/api/auth/register")
@@ -153,10 +161,13 @@ def login(req: AuthReq):
 @app.get("/api/dashboard")
 def dashboard(user=Depends(_current_user)):
     uid = user["user_id"]
+    settings = db.load_user_settings(uid)
     return {
         "portfolio": db.load_portfolio(uid),
         "positions": db.load_positions(uid),
         "recent_trades": db.get_trade_history(uid, limit=50),
+        "control_mode": settings.get("control_mode"),
+        "strategy": settings.get("strategy"),
     }
 
 
@@ -170,6 +181,16 @@ def signals(user=Depends(_current_user)):
         "today": db.get_signals(uid, date=today),
         "history": db.get_signals(uid, limit=100),
     }
+
+
+@app.put("/api/signals/{symbol}/approval")
+def update_signal_approval(symbol: str, req: ApprovalReq, user=Depends(_current_user)):
+    uid = user["user_id"]
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    updated = db.set_signal_approval(uid, symbol.upper(), today, req.approved)
+    if not updated:
+        raise HTTPException(404, "Signal not found or already executed")
+    return {"status": "saved", "symbol": symbol.upper(), "date": today, "approved": req.approved}
 
 
 # --History --------------------------------------------------------------------
@@ -234,13 +255,26 @@ def get_settings(user=Depends(_current_user)):
     uid = user["user_id"]
     alpaca = _alpaca_status_for_user(uid)
     telegram = _telegram_status_for_user(uid)
+    trading_params = db.load_user_settings(uid)
     return {
         "symbols": db.get_user_symbols(uid),
         "has_alpaca": alpaca.saved,
         "alpaca": alpaca.model_dump(),
         "telegram": telegram.model_dump(),
-        "trading_params": db.load_user_settings(uid),
+        "control_mode": trading_params.get("control_mode"),
+        "trading_params": trading_params,
     }
+
+
+@app.get("/api/control_mode")
+def get_control_mode(user=Depends(_current_user)):
+    return {"mode": db.get_control_mode(user["user_id"])}
+
+
+@app.put("/api/control_mode")
+def update_control_mode(req: ControlModeReq, user=Depends(_current_user)):
+    db.set_control_mode(user["user_id"], req.mode)
+    return {"status": "saved", "mode": req.mode}
 
 
 @app.put("/api/settings/watchlist")
@@ -256,6 +290,15 @@ def update_watchlist(req: WatchlistReq, user=Depends(_current_user)):
 def update_trading_params(req: TradingParamsReq, user=Depends(_current_user)):
     db.save_user_settings(user["user_id"], **req.model_dump())
     return {"status": "saved", "params": req.model_dump()}
+
+
+@app.put("/api/positions/{symbol}/close_approval")
+def update_position_close_approval(symbol: str, req: ApprovalReq, user=Depends(_current_user)):
+    uid = user["user_id"]
+    updated = db.set_position_close_approval(uid, symbol.upper(), req.approved)
+    if not updated:
+        raise HTTPException(404, "Position not found")
+    return {"status": "saved", "symbol": symbol.upper(), "approved": req.approved}
 
 
 @app.put("/api/settings/alpaca")

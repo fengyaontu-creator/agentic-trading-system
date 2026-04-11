@@ -34,6 +34,21 @@ export const api = {
   signals: () => req<SignalsData>("GET", "/api/signals"),
   history: () => req<{ trades: Trade[] }>("GET", "/api/history"),
   settings: () => req<SettingsData>("GET", "/api/settings"),
+  getControlMode: () => req<{ mode: ControlMode }>("GET", "/api/control_mode"),
+  updateControlMode: (mode: Exclude<ControlMode, null>) =>
+    req<{ status: string; mode: Exclude<ControlMode, null> }>("PUT", "/api/control_mode", { mode }),
+  updateSignalApproval: (symbol: string, approved: boolean) =>
+    req<{ status: string; symbol: string; date: string; approved: boolean }>(
+      "PUT",
+      `/api/signals/${encodeURIComponent(symbol)}/approval`,
+      { approved }
+    ),
+  updatePositionCloseApproval: (symbol: string, approved: boolean) =>
+    req<{ status: string; symbol: string; approved: boolean }>(
+      "PUT",
+      `/api/positions/${encodeURIComponent(symbol)}/close_approval`,
+      { approved }
+    ),
   updateWatchlist: (symbols: string[]) =>
     req("PUT", "/api/settings/watchlist", { symbols }),
   updateTradingParams: (params: TradingParams) =>
@@ -53,6 +68,8 @@ export const api = {
 
 // -- Types --------------------------------------------------------------------
 
+export type ControlMode = "auto" | "manual" | null;
+
 export interface Portfolio {
   cash: number;
   portfolio_value: number;
@@ -64,6 +81,8 @@ export interface Position {
   quantity: number;
   entry_price: number;
   current_price: number;
+  close_approved?: boolean;
+  entry_time?: string;
 }
 
 export interface Trade {
@@ -82,6 +101,9 @@ export interface Signal {
   sentiment_score?: number;
   reasoning?: string;
   executed: boolean;
+  approved?: boolean;
+  approved_at?: string | null;
+  created_at?: string;
   date: string;
 }
 
@@ -100,12 +122,15 @@ export interface TradingParams {
   last_param_update_at: string | null;
   last_param_update_status: string | null;
   last_param_update_reason: string | null;
+  control_mode?: ControlMode;
 }
 
 export interface DashboardData {
   portfolio: Portfolio | null;
   positions: Position[];
   recent_trades: Trade[];
+  control_mode: ControlMode;
+  strategy: string;
 }
 
 export interface SignalsData {
@@ -118,6 +143,7 @@ export interface SettingsData {
   has_alpaca: boolean;
   alpaca: AlpacaStatus;
   telegram: TelegramStatus;
+  control_mode: ControlMode;
   trading_params: TradingParams;
 }
 
