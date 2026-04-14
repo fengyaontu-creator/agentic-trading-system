@@ -9,6 +9,7 @@ the current user's credentials from the database.
 import os
 import sys
 import logging
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from dotenv import load_dotenv
@@ -418,16 +419,18 @@ def execute_trade(
 
 
 def reconcile_positions(user_id: str, api_key: str, api_secret: str) -> Dict:
-    """Compare Alpaca positions with local DB and return discrepancies.
+    """Compare Alpaca positions with local DB and auto-sync discrepancies.
 
-    Returns {"ok": bool, "diffs": [...]}.  Each diff is a dict with
-    symbol, broker_qty, db_qty so the caller can decide how to resolve.
+    The broker is the source of truth.  Any drift is corrected in the DB
+    so that subsequent sessions (especially close) operate on accurate data.
+
+    Returns {"ok": bool, "diffs": [...], "synced": int}.
     """
     import database as db  # local import to avoid circular at module level
 
     try:
         broker_positions = get_positions(api_key, api_secret)
-        broker_map = {p["symbol"]: int(p["qty"]) for p in broker_positions}
+        broker_map = {p["symbol"]: p for p in broker_positions}
 
         db_positions = db.load_positions(user_id)
         db_map = {p["symbol"]: p["quantity"] for p in db_positions}
@@ -435,16 +438,30 @@ def reconcile_positions(user_id: str, api_key: str, api_secret: str) -> Dict:
         all_symbols = set(broker_map) | set(db_map)
         diffs = []
         for sym in sorted(all_symbols):
-            bq = broker_map.get(sym, 0)
+            bp = broker_map.get(sym)
+            bq = int(bp["qty"]) if bp else 0
             dq = db_map.get(sym, 0)
             if bq != dq:
                 diffs.append({"symbol": sym, "broker_qty": bq, "db_qty": dq})
+                db.save_position(
+                    user_id=user_id,
+                    symbol=sym,
+                    quantity=bq,
+                    entry_price=float(bp["avg_entry_price"]) if bp else 0.0,
+                    current_price=float(bp["current_price"]) if bp else 0.0,
+                    entry_time=datetime.now(timezone.utc).isoformat(),
+                )
+                log.info(
+                    f"[RECONCILE] {user_id}/{sym} -- auto-synced db={dq} -> broker={bq}"
+                )
 
-        result = {"ok": len(diffs) == 0, "diffs": diffs}
+        result = {"ok": len(diffs) == 0, "diffs": diffs, "synced": len(diffs)}
         if result["ok"]:
-            log.info(f"[RECONCILE] {user_id} -- {len(broker_map)} positions in sync")
+            log.info(f"[RECONCILE] {user_id} -- positions in sync")
         else:
-            log.warning(f"[RECONCILE] {user_id} -- {len(diffs)} position(s) out of sync: {diffs}")
+            log.warning(
+                f"[RECONCILE] {user_id} -- {len(diffs)} position(s) out of sync, auto-synced to broker"
+            )
         return result
     except Exception as exc:
         log.error(f"[RECONCILE] {user_id} failed: {exc}", exc_info=True)

@@ -302,6 +302,7 @@ def close_for_user(user: dict, api_key: str) -> dict:
 
     creds = db.get_alpaca_credentials(user_id)
     if not creds:
+        log.info(f"[CLOSE] {user_id} -- no alpaca credentials, skipping")
         return {"user_id": user_id, "status": "skipped", "reason": "no alpaca credentials"}
 
     positions = db.load_positions_for_close(user_id)
@@ -344,6 +345,8 @@ def close_for_user(user: dict, api_key: str) -> dict:
                 )
                 trades += 1
                 log.info(f"[CLOSE] {user_id}/{symbol} -> {side} x{abs_qty} @ {filled_price}")
+            else:
+                log.warning(f"[CLOSE] {user_id}/{symbol} -- execute_trade returned None, order not placed")
         except Exception as exc:
             log.error(
                 f"[CLOSE] {user_id}/{symbol} failed: {exc} | "

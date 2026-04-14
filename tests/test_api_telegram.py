@@ -121,3 +121,27 @@ def test_send_telegram_test_message(tmp_path, monkeypatch):
     assert body["detail"] == "Test message sent to your Telegram chat."
     assert body["telegram"]["connected"] is True
     assert body["telegram"]["chat_username"] == "alice_tg"
+
+
+def test_app_url_normalizes_bare_host(tmp_path, monkeypatch):
+    _load_modules(tmp_path, monkeypatch)
+
+    import telegram_service
+
+    monkeypatch.setenv("APP_URL", "5.223.57.12")
+    monkeypatch.delenv("FRONTEND_URL", raising=False)
+    monkeypatch.delenv("PUBLIC_APP_URL", raising=False)
+
+    assert telegram_service._app_url() == "http://5.223.57.12"
+
+
+def test_app_url_keeps_full_url(tmp_path, monkeypatch):
+    _load_modules(tmp_path, monkeypatch)
+
+    import telegram_service
+
+    monkeypatch.setenv("APP_URL", "https://app.example.com")
+    monkeypatch.delenv("FRONTEND_URL", raising=False)
+    monkeypatch.delenv("PUBLIC_APP_URL", raising=False)
+
+    assert telegram_service._app_url() == "https://app.example.com"

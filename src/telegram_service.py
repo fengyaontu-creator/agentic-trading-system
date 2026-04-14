@@ -5,6 +5,7 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -19,13 +20,26 @@ _BOT_USERNAME_CACHE_AT: Optional[datetime] = None
 _BOT_USERNAME_CACHE_TTL = timedelta(minutes=30)
 
 
+def _normalize_app_url(value: str) -> str:
+    """Return a clickable app URL even when env vars contain a bare host."""
+    candidate = value.strip().rstrip("/")
+    if not candidate:
+        return ""
+    parsed = urlparse(candidate)
+    if parsed.scheme and parsed.netloc:
+        return candidate
+    if parsed.scheme and not parsed.netloc:
+        return candidate
+    return f"http://{candidate}"
+
+
 def _app_url() -> str:
     """Best-effort frontend URL included in reminder messages."""
     for key in ("APP_URL", "FRONTEND_URL", "PUBLIC_APP_URL"):
         value = os.getenv(key, "").strip()
         if value:
-            return value
-    return "http://localhost:5173"
+            return _normalize_app_url(value)
+    return _normalize_app_url("localhost:5173")
 
 
 def get_bot_token() -> Optional[str]:
