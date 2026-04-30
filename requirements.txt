@@ -11,6 +11,7 @@ langchain-openai>=0.1.0
 
 # Market Data
 yfinance>=0.2.30
+scikit-optimize>=0.10.2
 
 # Broker
 alpaca-py>=0.21.0

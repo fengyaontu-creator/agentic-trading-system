@@ -15,6 +15,7 @@ the regular analyze → trade → close pipeline uses them automatically.
 import json
 import logging
 import os
+import re
 from typing import Dict, List, Optional
 
 from langchain_openai import ChatOpenAI
@@ -25,6 +26,16 @@ from data_tools import fetch_market_data
 from sentiment_tools import get_market_sentiment
 
 log = logging.getLogger(__name__)
+
+_DEFAULT_PARAM_OPTIMIZER_MAX_TOKENS = 1200
+
+
+def _use_new_optimizer() -> bool:
+    return os.getenv("USE_NEW_OPTIMIZER", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _fallback_to_llm_optimizer() -> bool:
+    return os.getenv("NEW_OPTIMIZER_FALLBACK_TO_LLM", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 # Maps user-facing risk preference to a guidance range for the LLM
 _RISK_PROFILES = {
@@ -90,6 +101,34 @@ in low volatility, you can tighten stops and increase positions."""),
 ])
 
 
+def _get_param_optimizer_max_tokens() -> int:
+    """Return a conservative output budget for the optimizer LLM."""
+    raw = os.getenv("PARAM_OPTIMIZER_MAX_TOKENS", str(_DEFAULT_PARAM_OPTIMIZER_MAX_TOKENS))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_PARAM_OPTIMIZER_MAX_TOKENS
+    return max(200, value)
+
+
+def _format_optimizer_failure(exc: Exception) -> str:
+    """Collapse verbose provider errors into a short UI-safe status string."""
+    message = str(exc).strip()
+    lowered = message.lower()
+
+    if "requires more credits" in lowered or "can only afford" in lowered:
+        requested = re.search(r"requested up to (\d+) tokens", message, flags=re.IGNORECASE)
+        afforded = re.search(r"can only afford (\d+)", message, flags=re.IGNORECASE)
+        if requested and afforded:
+            return (
+                "OpenRouter 402: token budget exceeds current credits "
+                f"({requested.group(1)} requested, {afforded.group(1)} available)."
+            )
+        return "OpenRouter 402: token budget exceeds current credits."
+
+    return message[:200]
+
+
 def _gather_market_context(symbols: List[str]) -> Dict:
     """Collect recent volatility and sentiment for the user's watchlist."""
     volatilities = []
@@ -153,6 +192,25 @@ def optimize_params_for_user(user_id: str, api_key: str) -> Optional[Dict]:
     Returns:
         Dict of optimized parameters, or None on failure.
     """
+    if _use_new_optimizer():
+        try:
+            from optimizer.walk_forward import walk_forward_optimize
+
+            result = walk_forward_optimize(user_id)
+            if result is not None:
+                return result
+            if not _fallback_to_llm_optimizer():
+                return None
+            log.info(f"[PARAM_OPT] {user_id} new optimizer returned no params; falling back to LLM")
+        except Exception as exc:
+            log.error(f"[PARAM_OPT] {user_id} new optimizer failed: {exc}", exc_info=True)
+            try:
+                db.set_param_optimization_status(user_id, "failed", _format_optimizer_failure(exc))
+            except Exception:
+                pass
+            if not _fallback_to_llm_optimizer():
+                return None
+
     settings = db.load_user_settings(user_id)
     risk_pref = settings.get("risk_preference", "moderate")
     profile = _RISK_PROFILES.get(risk_pref, _RISK_PROFILES["moderate"])
@@ -198,6 +256,8 @@ Output only valid JSON."""
             model="anthropic/claude-sonnet-4-6",
             api_key=api_key,
             base_url="https://openrouter.ai/api/v1",
+            temperature=0,
+            max_tokens=_get_param_optimizer_max_tokens(),
         )
         chain = _PARAM_PROMPT | llm
         response = chain.invoke({"input": input_text})
@@ -247,7 +307,7 @@ Output only valid JSON."""
     except Exception as exc:
         log.error(f"[PARAM_OPT] {user_id} failed: {exc}", exc_info=True)
         try:
-            db.set_param_optimization_status(user_id, "failed", str(exc)[:200])
+            db.set_param_optimization_status(user_id, "failed", _format_optimizer_failure(exc))
         except Exception:
             pass
         return None
