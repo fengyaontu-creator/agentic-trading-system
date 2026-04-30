@@ -100,12 +100,17 @@ def walk_forward_optimize(
 
     proposed_params = aggregate_params(report)
     safety = apply_safety_guards(settings, proposed_params, build_search_space(risk_pref), report)
-    _write_user_audit(user_id, settings, proposed_params, safety, report)
+    save_recommendation = evaluate_save_recommendation(report)
+    _write_user_audit(user_id, settings, proposed_params, safety, report, save_recommendation)
     if not safety["allowed"]:
         _set_optimizer_status(user_id, "failed", safety["reason"][:200])
         return None
 
     params = safety["params"]
+    if not save_recommendation["recommended"]:
+        _set_optimizer_status(user_id, "skipped", save_recommendation["reason"][:200])
+        return params
+
     if _dry_run_enabled():
         _set_optimizer_status(
             user_id,
@@ -246,6 +251,40 @@ def apply_safety_guards(
     }
 
 
+def evaluate_save_recommendation(report: RandomSearchReport) -> Dict:
+    min_profitable_ratio = float(os.getenv("NEW_OPTIMIZER_MIN_PROFITABLE_RATIO", "0.60"))
+    min_return = float(os.getenv("NEW_OPTIMIZER_MIN_OOS_RETURN_PCT", "0.20"))
+    min_sharpe = float(os.getenv("NEW_OPTIMIZER_MIN_OOS_SHARPE", "0.80"))
+
+    total_windows = max(1, int(report.total_windows))
+    profitable_ratio = int(report.profitable_windows) / total_windows
+    failures = []
+    if profitable_ratio < min_profitable_ratio:
+        failures.append(
+            f"profitable ratio {profitable_ratio:.2%} below {min_profitable_ratio:.2%}"
+        )
+    if float(report.avg_oos_return_pct) < min_return:
+        failures.append(
+            f"avg OOS return {report.avg_oos_return_pct:.2f}% below {min_return:.2f}%"
+        )
+    if float(report.avg_oos_sharpe) < min_sharpe:
+        failures.append(
+            f"avg OOS Sharpe {report.avg_oos_sharpe:.2f} below {min_sharpe:.2f}"
+        )
+
+    if failures:
+        return {
+            "recommended": False,
+            "reason": "; ".join(failures),
+            "profitable_ratio": round(profitable_ratio, 4),
+        }
+    return {
+        "recommended": True,
+        "reason": "OOS metrics clear save thresholds",
+        "profitable_ratio": round(profitable_ratio, 4),
+    }
+
+
 def _dry_run_enabled() -> bool:
     return os.getenv("NEW_OPTIMIZER_DRY_RUN", "true").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -344,6 +383,7 @@ def _write_user_audit(
     proposed_params: Dict,
     safety: Dict,
     report: RandomSearchReport,
+    save_recommendation: Optional[Dict] = None,
 ) -> None:
     output_dir = ROOT / "outputs"
     output_dir.mkdir(exist_ok=True)
@@ -354,6 +394,8 @@ def _write_user_audit(
         "dry_run": _dry_run_enabled(),
         "allowed": safety["allowed"],
         "reason": safety["reason"],
+        "save_recommended": save_recommendation["recommended"] if save_recommendation else False,
+        "save_reason": save_recommendation["reason"] if save_recommendation else "not evaluated",
         "report": {
             "decision": report.decision,
             "total_windows": report.total_windows,
@@ -378,6 +420,8 @@ def _write_user_audit(
         f"Dry run: {payload['dry_run']}",
         f"Allowed: {payload['allowed']}",
         f"Reason: {payload['reason']}",
+        f"Save recommended: {payload['save_recommended']}",
+        f"Save reason: {payload['save_reason']}",
         (
             f"OOS: {report.profitable_windows}/{report.total_windows} profitable, "
             f"Sharpe={report.avg_oos_sharpe:.2f}, Return={report.avg_oos_return_pct:.2f}%, "

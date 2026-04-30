@@ -6,7 +6,13 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from backtest import BacktestParams
-from optimizer.walk_forward import aggregate_params, apply_safety_guards, build_search_space, walk_forward_optimize
+from optimizer.walk_forward import (
+    aggregate_params,
+    apply_safety_guards,
+    build_search_space,
+    evaluate_save_recommendation,
+    walk_forward_optimize,
+)
 
 
 @dataclass
@@ -28,6 +34,10 @@ class FakeWindowResult:
 @dataclass
 class FakeReport:
     windows: list
+    total_windows: int = 0
+    profitable_windows: int = 0
+    avg_oos_return_pct: float = 0.0
+    avg_oos_sharpe: float = 0.0
 
 
 def test_build_search_space_uses_risk_preference_ranges():
@@ -101,6 +111,42 @@ def test_safety_guards_reject_excessive_drawdown(monkeypatch):
 
     assert result["allowed"] is False
     assert "drawdown" in result["reason"]
+
+
+def test_save_recommendation_rejects_thin_oos_result(monkeypatch):
+    monkeypatch.setenv("NEW_OPTIMIZER_MIN_PROFITABLE_RATIO", "0.60")
+    monkeypatch.setenv("NEW_OPTIMIZER_MIN_OOS_RETURN_PCT", "0.20")
+    monkeypatch.setenv("NEW_OPTIMIZER_MIN_OOS_SHARPE", "0.80")
+    report = FakeReport(
+        windows=[],
+        total_windows=30,
+        profitable_windows=17,
+        avg_oos_return_pct=0.05,
+        avg_oos_sharpe=0.81,
+    )
+
+    result = evaluate_save_recommendation(report)
+
+    assert result["recommended"] is False
+    assert "profitable ratio" in result["reason"]
+    assert "avg OOS return" in result["reason"]
+
+
+def test_save_recommendation_accepts_strong_oos_result(monkeypatch):
+    monkeypatch.setenv("NEW_OPTIMIZER_MIN_PROFITABLE_RATIO", "0.60")
+    monkeypatch.setenv("NEW_OPTIMIZER_MIN_OOS_RETURN_PCT", "0.20")
+    monkeypatch.setenv("NEW_OPTIMIZER_MIN_OOS_SHARPE", "0.80")
+    report = FakeReport(
+        windows=[],
+        total_windows=30,
+        profitable_windows=20,
+        avg_oos_return_pct=0.35,
+        avg_oos_sharpe=1.1,
+    )
+
+    result = evaluate_save_recommendation(report)
+
+    assert result["recommended"] is True
 
 
 @patch("optimizer.walk_forward._write_watchlist_audit")
